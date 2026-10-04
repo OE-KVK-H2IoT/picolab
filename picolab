@@ -596,6 +596,31 @@ picotool_target_args() {
     printf -- '--bus\n%s\n--address\n%s\n' "$1" "$2"
 }
 
+# Which RP chip is the board on USB? Prints rp2040 | rp2350 | nothing (no plain board).
+# Skips CMSIS/debug-probe devices. PIDs: 0003/0004/000a = RP2040 family; 000f/0005/0009 = RP2350.
+usb_board_family() {
+    local d pid prod
+    for d in /sys/bus/usb/devices/*; do
+        [ "$(cat "$d/idVendor" 2>/dev/null)" = 2e8a ] || continue
+        prod="$(cat "$d/product" 2>/dev/null || true)"
+        printf '%s' "$prod" | grep -qiE 'cmsis|debug.probe' && continue
+        pid="$(cat "$d/idProduct" 2>/dev/null)"
+        case "$pid" in
+            0003|0004|000a) echo rp2040; return 0 ;;
+            000f|0005|0009) echo rp2350; return 0 ;;
+        esac
+    done
+    return 1
+}
+# Board name -> chip family (PICO_BOARD values).
+board_family() {
+    case "$1" in
+        pico2*)      echo rp2350 ;;
+        pico|pico_w) echo rp2040 ;;
+        *)           echo "" ;;
+    esac
+}
+
 # Probe-free flashing: no SWD probe, no OpenOCD. picotool talks to the chip over plain USB.
 # With -f it can reboot a board that is already running a USB-stdio program into the
 # bootloader by itself (picotool >= 1.1, no BOOTSEL button needed); -x runs the new image
@@ -616,6 +641,25 @@ flash_no_probe() {
         echo "   ...or flash by hand: hold BOOTSEL, replug, drag the .uf2 to the RP2350 drive." >&2
         exit 1
     fi
+    # Firmware/board mismatch: an RP2350 image cannot boot on an RP2040 (or vice versa) —
+    # the board just stays in BOOTSEL and no serial port appears. Catch it before writing.
+    local want_board="" want_fam="" have_fam=""
+    if [ -n "${BUILD_DIR:-}" ] && [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+        want_board="$(sed -n 's/^PICO_BOARD:STRING=//p' "$BUILD_DIR/CMakeCache.txt" | head -1)"
+        want_fam="$(board_family "$want_board")"
+    fi
+    have_fam="$(usb_board_family || true)"
+    if [ -n "$want_fam" ] && [ -n "$have_fam" ] && [ "$want_fam" != "$have_fam" ]; then
+        echo "!! firmware/board mismatch: this image is built for PICO_BOARD=${want_board:-?} ($want_fam)," >&2
+        echo "   but the board on USB is an $have_fam. That image cannot boot there — the board" >&2
+        echo "   just stays in BOOTSEL, and no serial port appears." >&2
+        case "$have_fam" in
+            rp2040) echo "   Rebuild for this board:  $ME build <lab> PICO_BOARD=pico   (then flash again)" >&2 ;;
+            rp2350) echo "   Rebuild for this board:  $ME build <lab> PICO_BOARD=pico2_w   (then flash again)" >&2 ;;
+        esac
+        echo "   ...or connect the board the firmware was built for." >&2
+        exit 1
+    fi
     # If the probe is also on USB, picotool must be told which device is the target.
     # -f is part of device-selection, so it must follow --bus/--address (see probe-free test).
     mapfile -t sel < <(picotool_target_args)
@@ -624,9 +668,12 @@ flash_no_probe() {
     explain "picotool reboots the chip into its bootloader if needed (-f), writes the image over USB, then starts it (-x) — no SWD, no OpenOCD, no probe"
     show "$pt" load "${sel[@]}" -f -x "$img"
     if ! "$pt" load "${sel[@]}" -f -x "$img"; then
-        echo "${C_ERR}!! picotool could not flash. If the board is unresponsive, or its USB" >&2
-        echo "   interface is not one picotool can talk to, enter BOOTSEL by hand: hold BOOTSEL," >&2
-        echo "   tap RUN / replug, then drag the .uf2 to the RP2350 mass-storage drive.${C_OFF}" >&2
+        echo "${C_ERR}!! picotool could not flash.${C_OFF}" >&2
+        echo "   If it said 'unable to connect ... permissions', install the udev rule (setup §4):" >&2
+        echo "     $ME doctor --fix     # the 'Pico permission' fix; then replug the Pico" >&2
+        echo "   Otherwise, if the board is unresponsive or its USB interface is not one picotool" >&2
+        echo "   can talk to, enter BOOTSEL by hand: hold BOOTSEL, tap RUN / replug, then drag the" >&2
+        echo "   .uf2 to the RP2350 mass-storage drive.${C_OFF}" >&2
         exit 1
     fi
 }
@@ -1188,6 +1235,15 @@ fix_picotool_cli() {
     esac
 }
 
+# Raw USB access (picotool flashing, OpenOCD) and /dev/ttyACM* are root-only until a udev
+# rule tags Raspberry Pi devices for the active session (uaccess). Same rule as setup §4.
+fix_udev() {
+    propose "install the udev rule for Raspberry Pi USB devices (no sudo for flash, OpenOCD, serial)" \
+        "printf '%s\n' '# Raspberry Pi (Pico, RP2350 bootrom, Debug Probe) — grant the active local user access' 'SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\"' 'SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\"' | sudo tee /etc/udev/rules.d/99-pico.rules >/dev/null" \
+        "sudo udevadm control --reload-rules && sudo udevadm trigger"
+    echo "   unplug and replug the Pico (and the Debug Probe) to pick the rule up."
+}
+
 # Build the Raspberry Pi OpenOCD fork — it is the one that carries target/rp2350.cfg —
 # into ~/.pico-sdk/openocd/pi-fork, where openocd_bin()/ocd_scripts_arg() already look.
 # Needs autotools + libusb dev headers; installed first if missing.
@@ -1475,21 +1531,36 @@ doctor_hardware() {
             [ "$(cat "$d/idVendor" 2>/dev/null)" = 2e8a ] || continue
             case "$(cat "$d/idProduct" 2>/dev/null)" in
                 0003|000f) pdev="$d" ;;   # RP2040 / RP2350 BOOTSEL
-                0009) grep -qiE 'cmsis|debug.probe' "$d/product" 2>/dev/null || pdev="$d" ;;  # plain Pico CDC
+                0009|000a) grep -qiE 'cmsis|debug.probe' "$d/product" 2>/dev/null || pdev="$d" ;;  # RP2350 / RP2040 CDC
             esac
             [ -n "$pdev" ] && { ppid="$(cat "$d/idProduct")"; pprod="$(cat "$d/product" 2>/dev/null)"; break; }
         done
+        local chip=""
+        case "$ppid" in
+            0003|000a) chip="RP2040 (Pico 1 / Pico W)" ;;
+            000f|0009) chip="RP2350 (Pico 2 / 2 W)" ;;
+        esac
         case "$ppid" in
             0003|000f) DR_BOARD=pico-bootsel
-                       mark ok "Pico (BOOTSEL)" "plain Pico in bootloader mode (2e8a:$ppid)"
+                       mark ok "Pico (BOOTSEL)" "$chip in bootloader mode (2e8a:$ppid)"
                        mark note "debug probe" "not connected — SWD needs it; probe-free works now: '$ME flash --uf2 <lab>'" ;;
-            0009)      DR_BOARD=pico-usb
-                       mark ok "Pico (USB)" "plain Pico running USB stdio ($pprod)"
+            0009|000a) DR_BOARD=pico-usb
+                       mark ok "Pico (USB)" "$chip running USB stdio ($pprod)"
                        mark note "debug probe" "not connected — SWD needs it; probe-free works now: '$ME flash --uf2 <lab>', '$ME monitor usb'" ;;
             *)         DR_BOARD=none
                        mark warn "debug probe" "NOT CONNECTED — SWD flash/debug needs the PicoGremlin/Debug Probe"
                        mark note "Pico" "no RP-series device on USB — connect the Pico's own USB (for --uf2) or the probe (for SWD)" ;;
         esac
+        # picotool opens the raw USB device; without a udev rule only root may.
+        if [ -n "$pdev" ]; then
+            local node; node="$(printf '/dev/bus/usb/%03d/%03d' "$(cat "$pdev/busnum")" "$(cat "$pdev/devnum")")"
+            if [ -r "$node" ] && [ -w "$node" ]; then
+                mark ok "Pico permission" "$node is accessible to $(id -un) — picotool can flash"
+            else
+                mark FAIL "Pico permission" "$node is root-only — picotool cannot flash without the 2e8a udev rule (setup §4); install it, then replug"
+                FIXES+=(udev)
+            fi
+        fi
         if find_acm_by_pid 0009 pico >/dev/null; then
             mark note "Pico console" "$(find_acm_by_pid 0009 pico) — console over the Pico's own USB"
         fi
