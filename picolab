@@ -1114,11 +1114,11 @@ fix_picotool_cli() {
 fix_openocd() {
     local src="$HOME/.cache/picolab/openocd" dst="$HOME/.pico-sdk/openocd/pi-fork" deps="" conf_extra=""
     if command -v apt-get >/dev/null 2>&1; then
-        deps="sudo apt-get install -y git build-essential libtool automake autoconf pkg-config libusb-1.0-0-dev libjim-dev texinfo"
+        deps="sudo apt-get install -y git build-essential libtool automake autoconf pkg-config libusb-1.0-0-dev libhidapi-dev libjim-dev texinfo"
     elif command -v pacman >/dev/null 2>&1; then
-        deps="sudo pacman -S --needed git base-devel libtool automake autoconf pkgconf libusb jimtcl texinfo"
+        deps="sudo pacman -S --needed git base-devel libtool automake autoconf pkgconf libusb hidapi jimtcl texinfo"
     fi
-    [ -n "$deps" ] && propose "install the OpenOCD build dependencies (autotools, libusb, jimtcl)" "$deps"
+    [ -n "$deps" ] && propose "install the OpenOCD build dependencies (autotools, libusb, hidapi, jimtcl)" "$deps"
     # jimtcl is required. Use the system one if present; otherwise build the bundled copy
     # (--enable-internal-jimtcl, deprecated but works — needs the jimtcl submodule).
     if ! pkg-config --exists jimtcl 2>/dev/null && [ ! -f /usr/include/jim.h ]; then
