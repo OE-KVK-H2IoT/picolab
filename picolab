@@ -189,7 +189,10 @@ OCD_TARGET="target/rp2350.cfg"
 ocd_scripts_arg() {
     [ -n "${OPENOCD_SCRIPTS:-}" ] && return
     local d
-    d=$(ls -d "$HOME"/.pico-sdk/openocd/*/scripts 2>/dev/null | head -1 || true)
+    # the Pico setup layout (<ver>/scripts) and a built-from-source layout
+    # (<prefix>/share/openocd/scripts) are both accepted
+    d=$(ls -d "$HOME"/.pico-sdk/openocd/*/scripts \
+              "$HOME"/.pico-sdk/openocd/*/share/openocd/scripts 2>/dev/null | head -1 || true)
     [ -n "$d" ] && printf -- '-s\n%s\n' "$d"
 }
 
@@ -200,9 +203,9 @@ ocd_scripts_arg() {
 openocd_bin() {
     if command -v openocd >/dev/null 2>&1; then echo openocd; return; fi
     local b
-    b=$(ls "$HOME"/.pico-sdk/openocd/*/openocd 2>/dev/null | head -1 || true)
+    b=$(ls "$HOME"/.pico-sdk/openocd/*/openocd "$HOME"/.pico-sdk/openocd/*/bin/openocd 2>/dev/null | head -1 || true)
     [ -n "$b" ] && { echo "$b"; return; }
-    echo "!! openocd not found — not on PATH and no ~/.pico-sdk/openocd/*/openocd." >&2
+    echo "!! openocd not found — not on PATH and no ~/.pico-sdk/openocd/*[/bin]/openocd." >&2
     echo "   Install it via the Pico setup, or put openocd on PATH." >&2
     exit 1
 }
@@ -1048,6 +1051,26 @@ fix_picotool_cli() {
     esac
 }
 
+# Build the Raspberry Pi OpenOCD fork — it is the one that carries target/rp2350.cfg —
+# into ~/.pico-sdk/openocd/pi-fork, where openocd_bin()/ocd_scripts_arg() already look.
+# Needs autotools + libusb dev headers; installed first if missing.
+fix_openocd() {
+    local src="$HOME/.cache/picolab/openocd" dst="$HOME/.pico-sdk/openocd/pi-fork" deps=""
+    if command -v apt-get >/dev/null 2>&1; then
+        deps="sudo apt-get install -y git build-essential libtool automake autoconf pkg-config libusb-1.0-0-dev texinfo"
+    elif command -v pacman >/dev/null 2>&1; then
+        deps="sudo pacman -S --needed git base-devel libtool automake autoconf pkgconf libusb texinfo"
+    fi
+    [ -n "$deps" ] && propose "install the OpenOCD build dependencies (autotools, libusb)" "$deps"
+    propose "build the Raspberry Pi OpenOCD fork (has target/rp2350.cfg) into $dst" \
+        "rm -rf '$src' && git clone --depth 1 https://github.com/raspberrypi/openocd.git '$src'" \
+        "cd '$src' && ./bootstrap" \
+        "cd '$src' && ./configure --prefix='$dst' --enable-cmsis-dap --disable-werror" \
+        "make -C '$src' -j$(nproc)" \
+        "make -C '$src' install"
+    echo "   installed: $dst/bin/openocd  (picolab finds it automatically)"
+}
+
 fix_freertos() {
     propose "fetch the FreeRTOS kernel submodule (for the RTOS labs)" \
         "git -C '$DR_FR_ROOT' submodule update --init lib/FreeRTOS-Kernel"
@@ -1120,9 +1143,9 @@ doctor() {
                     /usr/local/share/openocd/scripts /usr/share/openocd/scripts; do
             [ -n "$sdir" ] && [ -f "$sdir/target/rp2350.cfg" ] && { cfg="$sdir"; break; }
         done
-        [ -n "$cfg" ] && mark ok "openocd" "$ver (rp2350.cfg found)" \
-            || mark FAIL "openocd" "$ver but no target/rp2350.cfg — need the Pi fork / OPENOCD_SCRIPTS (setup §3)"
-    else mark FAIL "openocd" "not found — install the Pi fork or add ~/.pico-sdk to PATH (setup §3)"; fi
+        if [ -n "$cfg" ]; then mark ok "openocd" "$ver (rp2350.cfg found)"
+        else mark FAIL "openocd" "$ver but no target/rp2350.cfg — need the Pi fork / OPENOCD_SCRIPTS (setup §3)"; FIXES+=(openocd); fi
+    else mark FAIL "openocd" "not found — install the Pi fork or add ~/.pico-sdk to PATH (setup §3)"; FIXES+=(openocd); fi
 
     if command -v arm-none-eabi-gdb >/dev/null 2>&1; then
         mark ok "gdb" "arm-none-eabi-gdb $(arm-none-eabi-gdb --version | head -1 | grep -oE '[0-9][0-9.]+' | head -1)"
@@ -1254,9 +1277,25 @@ doctor_hardware() {
         dev="$d"; break
     done
     if [ -z "$dev" ]; then
-        mark warn "debug probe" "NOT CONNECTED — plug the PicoGremlin's USB-C into the PC (needed for flash / debug / monitor)"
+        mark warn "debug probe" "NOT CONNECTED — SWD flash/debug needs the PicoGremlin/Debug Probe"
+        # A plain Pico (no probe) is still useful: it runs USB stdio, or sits in BOOTSEL.
+        # Detect it on USB and point at the probe-free path.
+        local pdev="" ppid="" pprod=""
+        for d in /sys/bus/usb/devices/*; do
+            [ "$(cat "$d/idVendor" 2>/dev/null)" = 2e8a ] || continue
+            case "$(cat "$d/idProduct" 2>/dev/null)" in
+                0003|000f) pdev="$d" ;;   # RP2040 / RP2350 BOOTSEL
+                0009) grep -qiE 'cmsis|debug.probe' "$d/product" 2>/dev/null || pdev="$d" ;;  # plain Pico CDC
+            esac
+            [ -n "$pdev" ] && { ppid="$(cat "$d/idProduct")"; pprod="$(cat "$d/product" 2>/dev/null)"; break; }
+        done
+        case "$ppid" in
+            0003|000f) mark ok "Pico (BOOTSEL)" "plain Pico in bootloader mode (2e8a:$ppid) — probe-free: '$ME flash --uf2 <lab>' (or drag the .uf2)" ;;
+            0009)      mark ok "Pico (USB)" "plain Pico running USB stdio ($pprod) — probe-free: '$ME flash --uf2 <lab>'; console: '$ME monitor usb'" ;;
+            *)         mark note "Pico" "no RP-series device on USB — connect the Pico's own USB (for --uf2) or the probe (for SWD)" ;;
+        esac
         if find_acm_by_pid 0009 pico >/dev/null; then
-            mark note "Pico console" "$(find_acm_by_pid 0009 pico) — the Pico's own USB is connected (USB-CDC output only; no debugging without the probe)"
+            mark note "Pico console" "$(find_acm_by_pid 0009 pico) — console over the Pico's own USB"
         fi
         return 0
     fi
@@ -1425,6 +1464,31 @@ EOF
 
 # install — make `picolab` a normal command. A symlink, not a copy, so it always runs
 # THIS checkout: a `git pull` of the course repo updates the command too.
+rc_file() { case "${SHELL##*/}" in zsh) echo "$HOME/.zshrc" ;; *) echo "$HOME/.bashrc" ;; esac; }
+
+# Optional upgrade: install a newer Pico SDK than the course pin (and optionally refresh
+# picotool/OpenOCD for it). The default install stays pinned, so the course stays in sync.
+upgrade_cmd() {
+    local ver="${1:-}"
+    if [ -z "$ver" ]; then
+        ver="$(git ls-remote --tags https://github.com/raspberrypi/pico-sdk.git 'refs/tags/*' 2>/dev/null \
+              | sed 's#.*refs/tags/##' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+        [ -n "$ver" ] || { echo "!! could not find the latest SDK tag (network?) — pass one: $ME upgrade 2.2.0" >&2; exit 1; }
+        echo ">> latest stable Pico SDK: $ver   (the course pins ${SDK_VERSION}; this is opt-in)"
+    fi
+    local dest="$HOME/.pico-sdk/sdk/$ver" rc; rc="$(rc_file)"
+    propose "install Pico SDK $ver and point PICO_SDK_PATH at it (optional upgrade)" \
+        "[ -f '$dest/pico_sdk_init.cmake' ] || { mkdir -p '$HOME/.pico-sdk/sdk' && git clone --depth 1 --branch '$ver' https://github.com/raspberrypi/pico-sdk.git '$dest'; }" \
+        "git -C '$dest' submodule update --init --depth 1" \
+        "sed -i.bak '/^export PICO_SDK_PATH=/d' '$rc' && echo 'export PICO_SDK_PATH=\"$dest\"' >> '$rc'"
+    echo "   takes effect in a new terminal, or now:  export PICO_SDK_PATH=\"$dest\""
+    echo "   (switch back to the course pin any time by editing $rc)"
+    if [ "$INSTALL_TOOLS" = 1 ]; then
+        echo; echo ">> --tools: refreshing picotool/OpenOCD for this SDK ..."
+        doctor --fix
+    fi
+}
+
 install_cli() {
     local dir="${1:-$HOME/.local/bin}" link rc
     link="$dir/picolab"
@@ -1635,7 +1699,10 @@ ${C_BOLD}Two terminals${C_OFF}  (recommended: see what OpenOCD does while you wo
 ${C_BOLD}More${C_OFF}
   picolab list          course lab targets it can find      picolab build-all   compile-check them all
   picolab load x.elf    flash a prebuilt image, then monitor
-  picolab doctor --fix  offer each known fix, and ask before running it (builds/links picotool too)
+  picolab doctor --fix  offer each known fix, and ask before running it (builds/links picotool
+                        and OpenOCD too)
+  picolab upgrade [ver] opt in to a newer Pico SDK than the course pin (default: latest);
+                        --tools also refreshes picotool/OpenOCD. The pin stays the default.
   picolab help env      settings: PICO_SDK_PATH, ADAPTER_SPEED, SERIAL, ...
 
 ${C_BOLD}Learn what it does${C_OFF}
@@ -1714,6 +1781,7 @@ case "$cmd" in
     ocd|server)   ocd_server ;;
     init|new)     init_project "${pos[@]}" ;;
     install)      install_cli "${pos[0]:-}" ;;
+    upgrade)      upgrade_cmd "${pos[0]:-}" ;;
     uninstall)    uninstall_cli "${pos[0]:-}" ;;
     explain)      explain_cmd "${pos[@]}" ;;
     dashboard)    dashboard_term ;;
