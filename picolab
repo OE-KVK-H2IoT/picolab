@@ -976,20 +976,25 @@ fix_sdk_clone() {
     done
     [ -e "$dest" ] && dest="$HOME/pico-sdk-$SDK_VERSION"
     propose "get the Pico SDK $SDK_VERSION with its submodules, and set PICO_SDK_PATH in $rc" \
-        "git clone --depth 1 --branch $SDK_VERSION https://github.com/raspberrypi/pico-sdk.git '$dest'" \
-        "git -C '$dest' submodule update --init --depth 1" \
+        "git -c advice.detachedHead=false clone --depth 1 --branch $SDK_VERSION https://github.com/raspberrypi/pico-sdk.git '$dest'" \
+        "git -C '$dest' submodule update --init --recursive --depth 1" \
         "echo 'export PICO_SDK_PATH=\"$dest\"' >> '$rc'" \
     && echo "   PICO_SDK_PATH takes effect in NEW terminals (or now: export PICO_SDK_PATH=\"$dest\")."
 }
 fix_sdk_submodules() {
-    propose "fetch the SDK's missing submodules (TinyUSB, pioasm sources, ...)" \
-        "git -C '$PICO_SDK_PATH' submodule update --init"
+    propose "fetch the SDK's missing submodules (TinyUSB, lwIP, mbedTLS, pioasm, ...)" \
+        "git -C '$PICO_SDK_PATH' submodule update --init --recursive"
 }
 fix_picotool_build() {
     local want src; want="$(sdk_picotool_want)"; [ -n "$want" ] || want="$PICOTOOL_VERSION"
     src="$HOME/.cache/picolab/picotool-$want"
+    # picotool's CMake REQUIRES PICO_SDK_PATH, and that pulls in the SDK's mbedTLS — so the
+    # SDK submodules must be initialized first, or configure dies in lib/mbedtls
+    # ("framework/CMakeLists.txt not found"). The doctor's SDK-submodule check flags this
+    # too, but make the picotool fix self-sufficient.
     propose "build picotool $want — the version this SDK asks for — from git into ~/.local (no sudo)" \
-        "rm -rf '$src' && git clone --depth 1 --branch $want https://github.com/raspberrypi/picotool.git '$src'" \
+        "git -C '$PICO_SDK_PATH' submodule update --init --recursive" \
+        "rm -rf '$src' && git -c advice.detachedHead=false clone --depth 1 --branch $want https://github.com/raspberrypi/picotool.git '$src'" \
         "cmake -S '$src' -B '$src/build' ${GEN_ARGS[*]} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX='$HOME/.local' -DPICO_SDK_PATH='$PICO_SDK_PATH'" \
         "cmake --build '$src/build' -j$(nproc)" \
         "cmake --install '$src/build'"
@@ -1133,6 +1138,8 @@ doctor() {
         local miss=""
         [ -f "$PICO_SDK_PATH/tools/pioasm/CMakeLists.txt" ] || miss="pioasm"
         [ -n "$(ls -A "$PICO_SDK_PATH/lib/tinyusb" 2>/dev/null)" ] || miss="${miss:+$miss, }tinyusb"
+        [ -n "$(ls -A "$PICO_SDK_PATH/lib/lwip" 2>/dev/null)" ] || miss="${miss:+$miss, }lwip"
+        [ -n "$(ls -A "$PICO_SDK_PATH/lib/mbedtls" 2>/dev/null)" ] || miss="${miss:+$miss, }mbedtls"
         if [ -z "$miss" ]; then mark ok "SDK submodules" "pioasm + tinyusb present"
         else mark FAIL "SDK submodules" "missing: $miss — git -C \"\$PICO_SDK_PATH\" submodule update --init (setup §2)"; FIXES+=(sdk_submodules); fi
     fi
