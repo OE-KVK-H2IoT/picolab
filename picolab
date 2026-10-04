@@ -914,6 +914,10 @@ picotool_cfgs() {
         for c in "$pre/lib/cmake/picotool" "$pre/lib64/cmake/picotool" "$pre/share/picotool/cmake"; do
             [ -f "$c/picotoolConfigVersion.cmake" ] && echo "$c/picotoolConfigVersion.cmake"
         done
+        # Debian/Ubuntu multiarch path, e.g. /usr/lib/x86_64-linux-gnu/cmake/picotool
+        for c in /usr/lib/*/cmake/picotool /usr/local/lib/*/cmake/picotool; do
+            [ -f "$c/picotoolConfigVersion.cmake" ] && echo "$c/picotoolConfigVersion.cmake"
+        done
     done | awk '!seen[$0]++'   # PATH may repeat a prefix
 }
 # The one a build will use for <want>: the first compatible candidate (empty if none).
@@ -992,12 +996,16 @@ fix_picotool_build() {
     # SDK submodules must be initialized first, or configure dies in lib/mbedtls
     # ("framework/CMakeLists.txt not found"). The doctor's SDK-submodule check flags this
     # too, but make the picotool fix self-sufficient.
+    # -Wno-error: GCC 15 turns newer warnings (e.g. mbedTLS's unterminated-string-init)
+    # into errors. If the source build still fails on mbedTLS API drift, use the distro
+    # package instead:  fix_picotool_pkg  (sudo apt install picotool).
     propose "build picotool $want — the version this SDK asks for — from git into ~/.local (no sudo)" \
         "git -C '$PICO_SDK_PATH' submodule update --init --recursive" \
         "rm -rf '$src' && git -c advice.detachedHead=false clone --depth 1 --branch $want https://github.com/raspberrypi/picotool.git '$src'" \
-        "cmake -S '$src' -B '$src/build' ${GEN_ARGS[*]} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX='$HOME/.local' -DPICO_SDK_PATH='$PICO_SDK_PATH'" \
+        "cmake -S '$src' -B '$src/build' ${GEN_ARGS[*]} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX='$HOME/.local' -DPICO_SDK_PATH='$PICO_SDK_PATH' -DCMAKE_C_FLAGS=-Wno-error -DCMAKE_CXX_FLAGS=-Wno-error" \
         "cmake --build '$src/build' -j$(nproc)" \
         "cmake --install '$src/build'"
+    echo "   if this fails on mbedTLS/API errors, install the prebuilt instead:  sudo apt install picotool"
 }
 fix_picotool_shadow() {
     # Remove every too-old install as a unit — binary, CMake package, data files — so
@@ -1038,6 +1046,18 @@ find_picotool_cli() {
     [ -n "$d" ] && { echo "$d"; return 0; }
     return 1
 }
+# Prefer the distro's prebuilt picotool. It avoids the mbedTLS/GCC-15 source-build pain
+# entirely, and the package usually ships the CMake config the SDK's build looks for.
+fix_picotool_pkg() {
+    local cmd=""
+    if command -v apt-get >/dev/null 2>&1; then cmd="sudo apt-get install -y picotool"
+    elif command -v pacman >/dev/null 2>&1; then cmd="sudo pacman -S --needed picotool"
+    elif command -v zypper >/dev/null 2>&1; then cmd="sudo zypper install -y picotool"
+    fi
+    [ -n "$cmd" ] || return 1
+    propose "install the prebuilt picotool from your distro (no compile, no mbedTLS)" "$cmd"
+}
+
 # Make the shell's `picotool` work: link an existing binary into ~/.local/bin, or build one
 # if none is on the machine. This is what `picolab flash --uf2` / `picolab load --uf2` run.
 fix_picotool_cli() {
@@ -1045,7 +1065,8 @@ fix_picotool_cli() {
     pcli="$(find_picotool_cli || true)"
     case "${SHELL##*/}" in zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
     if [ -z "$pcli" ]; then
-        fix_picotool_build                                   # nothing to link: build + install one
+        # Try the prebuilt package first; fall back to building from source if it fails.
+        if ! fix_picotool_pkg; then fix_picotool_build; fi
         return
     fi
     if [ -x "$link" ] && [ "$(readlink -f "$pcli")" = "$(readlink -f "$link")" ]; then
