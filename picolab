@@ -958,6 +958,20 @@ EOF
     echo "   ${C_DIM}(open the project folder itself in VS Code — \${workspaceFolder} must be $(basename "$PROJ"))${C_OFF}"
 }
 
+# Fallback for the Pico's own CDC: the /dev/serial/by-id symlinks are stable and
+# human-readable even when the udev PID properties are missing. Probe/probe-like entries
+# are skipped.
+find_pico_by_id() {
+    local l t
+    for l in /dev/serial/by-id/usb-Raspberry_Pi_*; do
+        [ -e "$l" ] || continue
+        case "$l" in *Debug_Probe*|*CMSIS*|*PicoGremlin*) continue ;; esac
+        t="$(readlink -f "$l")"
+        [ -n "$t" ] && { echo "$t"; return 0; }
+    done
+    return 1
+}
+
 monitor() {
     # Programs print to BOTH the Pico USB-CDC and UART0 (GP0/1 -> Debug Probe bridge).
     # The default prefers the probe's UART bridge (reliable for UART firmware). But
@@ -973,7 +987,17 @@ monitor() {
     esac
     if [ -z "$dev" ]; then
         if [ "$prefer" = usb ]; then
-            dev="$(find_acm_by_pid '0009|000a' pico || true)"; kind="the Pico's own USB-CDC"
+            # A just-flashed board reboots; USB-CDC re-enumerates a second or two later, so
+            # give it a moment before declaring the port missing.
+            local i=0
+            while [ "$i" -lt 10 ]; do
+                dev="$(find_acm_by_pid '0009|000a' pico || true)"
+                [ -n "$dev" ] && break
+                [ "$i" -eq 2 ] && echo ">> waiting for the Pico's USB-CDC to appear..."
+                i=$((i + 1)); sleep 0.5
+            done
+            [ -n "$dev" ] || dev="$(find_pico_by_id || true)"
+            kind="the Pico's own USB-CDC"
         else
             dev="$(find_acm_by_pid 000c        || true)"; kind="Debug Probe UART bridge"
             [ -n "$dev" ] || { dev="$(find_acm_by_pid 0009 probe || true)"; kind="probe UART bridge (CMSIS-DAP firmware on PID 0009)"; }
@@ -1499,6 +1523,11 @@ doctor() {
                 *" freertos "*) ;; *" freertos_global "*) ;; *" freertos_port "*) ;;
                 *) FIXES+=(freertos_global) ;;
             esac
+        fi
+        # The udev rule (setup §4): harmless to install ahead of the board, and it saves the
+        # 'root-only USB node' round-trip on a fresh machine.
+        if [ ! -f /etc/udev/rules.d/99-pico.rules ]; then
+            case " ${FIXES[*]-} " in *" udev "*) ;; *) FIXES+=(udev) ;; esac
         fi
     fi
 
