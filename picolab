@@ -668,6 +668,24 @@ flash_no_probe() {
     explain "picotool reboots the chip into its bootloader if needed (-f), writes the image over USB, then starts it (-x) — no SWD, no OpenOCD, no probe"
     show "$pt" load "${sel[@]}" -f -x "$img"
     if ! "$pt" load "${sel[@]}" -f -x "$img"; then
+        # No udev rule yet? The board is in BOOTSEL and its mass-storage drive is usually
+        # mounted — copying the .uf2 there is the same flash by hand. Try that before
+        # failing. PICOLAB_BOOTSEL overrides the search (tests, unusual mount points).
+        local uf2="" mnt="" m u; u="${USER:-$(id -un)}"
+        uf2="$(ls "${img%.*}.uf2" 2>/dev/null | head -1 || true)"
+        for m in "${PICOLAB_BOOTSEL:-}" "/media/$u/RP2350" "/media/$u/RPI-RP2" \
+                 "/run/media/$u/RP2350" "/run/media/$u/RPI-RP2" "/mnt/RP2350" "/mnt/RPI-RP2"; do
+            [ -n "$m" ] && [ -d "$m" ] && { mnt="$m"; break; }
+        done
+        if [ -n "$uf2" ] && [ -n "$mnt" ]; then
+            echo ">> picotool could not open the device — falling back to the mounted BOOTSEL drive"
+            show cp "$uf2" "$mnt/"
+            if cp "$uf2" "$mnt/"; then
+                echo "${C_OK}>> copied to $mnt — the board reboots and runs it.${C_OFF}"
+                echo "   (the permanent fix for picotool is the udev rule: $ME doctor --fix)"
+                return 0
+            fi
+        fi
         echo "${C_ERR}!! picotool could not flash.${C_OFF}" >&2
         echo "   If it said 'unable to connect ... permissions', install the udev rule (setup §4):" >&2
         echo "     $ME doctor --fix     # the 'Pico permission' fix; then replug the Pico" >&2
