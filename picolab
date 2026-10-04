@@ -4,6 +4,15 @@
 # User help lives in usage() / usage_env() below:  picolab help   ·   picolab help env
 set -euo pipefail
 
+# picolab's own environment file, written by `install --tools` / `upgrade`. Sourcing it here
+# means an upgrade takes effect on the NEXT picolab command (no shell restart) and wins over a
+# stale exported PICO_SDK_PATH. Set PICOLAB_NO_ENV=1 for a one-off override.
+PICOLAB_ENV="${PICOLAB_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/picolab/env}"
+if [ "${PICOLAB_NO_ENV:-0}" != 1 ] && [ -f "$PICOLAB_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$PICOLAB_ENV"
+fi
+
 # Resolve through symlinks: `picolab install` puts a link in ~/.local/bin, and HERE must
 # still be tools/picolab in the course repo, not the link's directory.
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -967,23 +976,32 @@ fix_packages() {
     propose "install missing system tools: ${DR_MISSING_PKGS[*]}" "$cmd"
 }
 fix_sdk_clone() {
-    local dest="$HOME/pico-sdk" rc d
-    case "${SHELL##*/}" in zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
-    # An SDK already on disk (a manual clone, or the VS Code extension's)? Use it, don't clone.
+    local dest="$HOME/pico-sdk" d best="" bestv="" v
+    # Prefer the course-pinned version if it is on disk; otherwise the NEWEST SDK found.
+    # (Never silently pick an older SDK over one the user just installed.)
     for d in "$HOME/pico-sdk" "$HOME"/pico-sdk-* "$HOME"/.pico-sdk/sdk/*; do
-        if [ -f "$d/pico_sdk_init.cmake" ]; then
-            propose "use the Pico SDK already at $d ($(git -C "$d" describe --tags 2>/dev/null || echo 'version ?')): set PICO_SDK_PATH in $rc" \
-                "echo 'export PICO_SDK_PATH=\"$d\"' >> '$rc'" \
-            && echo "   PICO_SDK_PATH takes effect in NEW terminals (or now: export PICO_SDK_PATH=\"$d\")."
-            return
+        [ -f "$d/pico_sdk_init.cmake" ] || continue
+        v="$(git -C "$d" describe --tags 2>/dev/null | sed 's/^v//')"; [ -n "$v" ] || v="?"
+        if [ "$v" = "$SDK_VERSION" ]; then best="$d"; bestv="$v"; break; fi
+        if [ -z "$bestv" ] || [ "$(printf '%s\n%s\n' "$bestv" "$v" | sort -V | tail -1)" = "$v" ]; then
+            best="$d"; bestv="$v"
         fi
     done
+    if [ -n "$best" ]; then
+        echo; echo "${C_CMD}>> fix: use the Pico SDK $bestv at $best (course pin: $SDK_VERSION)${C_OFF}"
+        echo "   $PICOLAB_ENV  <-  export PICO_SDK_PATH=\"$best\""
+        confirm || { echo "   skipped."; return 1; }
+        env_write PICO_SDK_PATH "$best"; rc_source_env
+        echo "${C_OK}>> done: PICO_SDK_PATH=$best — active for picolab now, and in new shells${C_OFF}"
+        return 0
+    fi
     [ -e "$dest" ] && dest="$HOME/pico-sdk-$SDK_VERSION"
-    propose "get the Pico SDK $SDK_VERSION with its submodules, and set PICO_SDK_PATH in $rc" \
+    if propose "get the Pico SDK $SDK_VERSION with its submodules, and set PICO_SDK_PATH" \
         "git -c advice.detachedHead=false clone --depth 1 --branch $SDK_VERSION https://github.com/raspberrypi/pico-sdk.git '$dest'" \
-        "git -C '$dest' submodule update --init --recursive --depth 1" \
-        "echo 'export PICO_SDK_PATH=\"$dest\"' >> '$rc'" \
-    && echo "   PICO_SDK_PATH takes effect in NEW terminals (or now: export PICO_SDK_PATH=\"$dest\")."
+        "git -C '$dest' submodule update --init --recursive --depth 1"; then
+        env_write PICO_SDK_PATH "$dest"; rc_source_env
+        echo "   active for picolab now, and in new shells via $PICOLAB_ENV"
+    fi
 }
 fix_sdk_submodules() {
     propose "fetch the SDK's missing submodules (TinyUSB, lwIP, mbedTLS, pioasm, ...)" \
@@ -1527,6 +1545,27 @@ EOF
 # THIS checkout: a `git pull` of the course repo updates the command too.
 rc_file() { case "${SHELL##*/}" in zsh) echo "$HOME/.zshrc" ;; *) echo "$HOME/.bashrc" ;; esac; }
 
+# Write/update one variable in picolab's env file (created if needed). picolab sources this at
+# startup, so a change is active on the very next command — no shell restart.
+env_write() {
+    local key="$1" val="$2" dir
+    dir="$(dirname "$PICOLAB_ENV")"; mkdir -p "$dir"
+    [ -f "$PICOLAB_ENV" ] || : > "$PICOLAB_ENV"
+    if grep -q "^export $key=" "$PICOLAB_ENV" 2>/dev/null; then
+        sed -i.bak "s#^export $key=.*#export $key=\"$val\"#" "$PICOLAB_ENV" && rm -f "$PICOLAB_ENV.bak"
+    else
+        echo "export $key=\"$val\"" >> "$PICOLAB_ENV"
+    fi
+}
+
+# Make interactive shells source picolab's env file (once), so PICO_SDK_PATH etc. are set
+# without hand-editing the rc.
+rc_source_env() {
+    local rc; rc="$(rc_file)"
+    grep -q 'picolab/env' "$rc" 2>/dev/null && return 0
+    printf '\n# picolab environment (SDK path etc.)\n[ -f "%s" ] && . "%s"\n' "$PICOLAB_ENV" "$PICOLAB_ENV" >> "$rc"
+}
+
 # Optional upgrade: install a newer Pico SDK than the course pin (and optionally refresh
 # picotool/OpenOCD for it). The default install stays pinned, so the course stays in sync.
 upgrade_cmd() {
@@ -1537,13 +1576,14 @@ upgrade_cmd() {
         [ -n "$ver" ] || { echo "!! could not find the latest SDK tag (network?) — pass one: $ME upgrade 2.2.0" >&2; exit 1; }
         echo ">> latest stable Pico SDK: $ver   (the course pins ${SDK_VERSION}; this is opt-in)"
     fi
-    local dest="$HOME/.pico-sdk/sdk/$ver" rc; rc="$(rc_file)"
-    propose "install Pico SDK $ver and point PICO_SDK_PATH at it (optional upgrade)" \
-        "[ -f '$dest/pico_sdk_init.cmake' ] || { mkdir -p '$HOME/.pico-sdk/sdk' && git clone --depth 1 --branch '$ver' https://github.com/raspberrypi/pico-sdk.git '$dest'; }" \
-        "git -C '$dest' submodule update --init --depth 1" \
-        "sed -i.bak '/^export PICO_SDK_PATH=/d' '$rc' && echo 'export PICO_SDK_PATH=\"$dest\"' >> '$rc'"
-    echo "   takes effect in a new terminal, or now:  export PICO_SDK_PATH=\"$dest\""
-    echo "   (switch back to the course pin any time by editing $rc)"
+    local dest="$HOME/.pico-sdk/sdk/$ver"
+    if propose "install Pico SDK $ver and point PICO_SDK_PATH at it (optional upgrade)" \
+        "[ -f '$dest/pico_sdk_init.cmake' ] || { mkdir -p '$HOME/.pico-sdk/sdk' && git -c advice.detachedHead=false clone --depth 1 --branch '$ver' https://github.com/raspberrypi/pico-sdk.git '$dest'; }" \
+        "git -C '$dest' submodule update --init --recursive --depth 1"; then
+        env_write PICO_SDK_PATH "$dest"; rc_source_env
+        echo "   active for picolab NOW (via $PICOLAB_ENV), and in new shells."
+        echo "   switch back to the course pin:  picolab upgrade $SDK_VERSION"
+    fi
     if [ "$INSTALL_TOOLS" = 1 ]; then
         echo; echo ">> --tools: refreshing picotool/OpenOCD for this SDK ..."
         doctor --fix
@@ -1569,7 +1609,8 @@ install_cli() {
         *) echo ">> one more step: $dir is not on your PATH yet. Add it once, then open a new terminal:"
            echo "     echo 'export PATH=\"$dir:\$PATH\"' >> $rc" ;;
     esac
-    [ -n "${PICO_SDK_PATH:-}" ] || echo ">> also needed to build: export PICO_SDK_PATH=/path/to/pico-sdk  (add it to $rc too)"
+    rc_source_env   # new shells pick up PICO_SDK_PATH etc. from picolab's env file
+    [ -n "${PICO_SDK_PATH:-}" ] || echo ">> no SDK set yet — '$ME install --tools' finds or clones one and records it in $PICOLAB_ENV"
     echo ">> then check the whole toolchain:  picolab doctor"
     if [ "$INSTALL_TOOLS" = 1 ]; then
         echo
@@ -1796,6 +1837,10 @@ ${C_BOLD}picolab settings${C_OFF} — environment variables (make one permanent:
                         course probe firmware needs it. 0 = OpenOCD's faster pipelined mode.
   PICOLAB_LABS          Colon-separated folders holding course labs (default: every src/<course>/
                         in this repo that contains Pico projects).
+  PICOLAB_ENV           where install/upgrade record PICO_SDK_PATH etc.
+                        (default: ~/.config/picolab/env). picolab sources it automatically, so an
+                        upgrade applies on the NEXT picolab command — no shell restart.
+  PICOLAB_NO_ENV        1 = ignore that env file for a one-off run.
   PICOLAB_SDK_VERSION   SDK release doctor --fix clones when there is none (default: $SDK_VERSION).
   PICOLAB_PICOTOOL_VERSION  picotool release to build when no SDK says which (default: $PICOTOOL_VERSION).
   NO_COLOR=1            Plain output, no colours.
