@@ -1661,8 +1661,32 @@ upgrade_cmd() {
     fi
 }
 
+# Put a directory on PATH for future shells. Idempotent: a marker comment guards against
+# appending twice, and the generated line itself avoids duplicate entries. Called by
+# `install`; a child process cannot change the current shell, so it says how to pick the
+# change up now.
+rc_path_add() {
+    local dir="$1" rc; rc="$(rc_file)"
+    if grep -q '# picolab PATH' "$rc" 2>/dev/null; then
+        case ":$PATH:" in
+            *":$dir:"*) echo ">> done — from any folder:  picolab help" ;;
+            *) echo ">> $dir is already in $rc (the 'picolab PATH' line) — open a new terminal, or:  source $rc" ;;
+        esac
+        return 0
+    fi
+    {
+        printf '\n# picolab PATH\n'
+        printf 'case ":$PATH:" in *":%s:"*) ;; *) PATH="%s:$PATH" ;; esac\n' "$dir" "$dir"
+        printf 'export PATH\n'
+    } >> "$rc"
+    case ":$PATH:" in
+        *":$dir:"*) echo ">> done — from any folder:  picolab help" ;;
+        *) echo ">> added $dir to PATH in $rc — open a new terminal, or:  source $rc" ;;
+    esac
+}
+
 install_cli() {
-    local dir="${1:-$HOME/.local/bin}" link rc
+    local dir="${1:-$HOME/.local/bin}" link
     link="$dir/picolab"
     if [ -L "$link" ] || [ -e "$link" ]; then
         if [ "$(readlink -f "$link")" != "$HERE/picolab" ]; then
@@ -1674,12 +1698,7 @@ install_cli() {
     echo ">> installing picolab as a link to $HERE/picolab"
     show_abs mkdir -p "$dir";                 mkdir -p "$dir"
     show_abs ln -sfn "$HERE/picolab" "$link"; ln -sfn "$HERE/picolab" "$link"
-    case "${SHELL##*/}" in zsh) rc="~/.zshrc" ;; *) rc="~/.bashrc" ;; esac
-    case ":$PATH:" in
-        *":$dir:"*) echo ">> done — from any folder:  picolab help" ;;
-        *) echo ">> one more step: $dir is not on your PATH yet. Add it once, then open a new terminal:"
-           echo "     echo 'export PATH=\"$dir:\$PATH\"' >> $rc" ;;
-    esac
+    rc_path_add "$dir"
     rc_source_env   # new shells pick up PICO_SDK_PATH etc. from picolab's env file
     [ -n "${PICO_SDK_PATH:-}" ] || echo ">> no SDK set yet — '$ME install --tools' finds or clones one and records it in $PICOLAB_ENV"
     echo ">> then check the whole toolchain:  picolab doctor"
