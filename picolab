@@ -1011,6 +1011,10 @@ fix_picotool_build() {
     # Newer toolchains can fail to compile picotool's bundled mbedTLS (GCC 15 warnings, and
     # mbedTLS API drift against older picotool). Prefer the prebuilt distro package.
     if fix_picotool_pkg; then return 0; fi
+    if [ -z "${PICO_SDK_PATH:-}" ] || [ ! -f "$PICO_SDK_PATH/pico_sdk_init.cmake" ]; then
+        echo "!! picotool's build needs a valid PICO_SDK_PATH — set it first with '$ME doctor --fix' (SDK fix), then retry" >&2
+        return 1
+    fi
     local want src; want="$(sdk_picotool_want)"; [ -n "$want" ] || want="$PICOTOOL_VERSION"
     src="$HOME/.cache/picolab/picotool-$want"
     # picotool's CMake REQUIRES PICO_SDK_PATH, and that pulls in the SDK's mbedTLS — so the
@@ -1556,6 +1560,10 @@ env_write() {
     else
         echo "export $key=\"$val\"" >> "$PICOLAB_ENV"
     fi
+    # Also set it for THIS process, so later fixes in the same `doctor --fix` run use it
+    # (the env file is only sourced at startup).
+    printf -v "$key" '%s' "$val"
+    export "$key"
 }
 
 # Make interactive shells source picolab's env file (once), so PICO_SDK_PATH etc. are set
