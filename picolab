@@ -246,6 +246,18 @@ picotool_bin() {
     return 1
 }
 
+# Does this picotool binary support device access? A build without libusb has no
+# load/save/reboot at all ("compiled without USB support") — it can still convert
+# .elf to .uf2, so SDK builds are fine, but `picolab flash --uf2` cannot work.
+picotool_has_usb() {
+    local pt="$1" out
+    [ -x "$pt" ] || return 1
+    out="$("$pt" help 2>&1 || true)"
+    printf '%s' "$out" | grep -qi 'compiled without USB support' && return 1
+    printf '%s' "$out" | grep -qE '^[[:space:]]*load[[:space:]]' || return 1
+    return 0
+}
+
 # Building needs the Pico SDK. Fail early with copy-paste setup rather than letting
 # CMake error cryptically deep in pico_sdk_import.cmake.
 require_sdk() {
@@ -592,6 +604,12 @@ flash_no_probe() {
             *.uf2) echo "   fallback: hold BOOTSEL, replug, then drag \"$img\" to the RP2350 drive." >&2 ;;
             *)     echo "   fallback: drag the matching .uf2 to the RP2350 drive (hold BOOTSEL, replug)." >&2 ;;
         esac
+        exit 1
+    fi
+    if ! picotool_has_usb "$pt"; then
+        echo "!! this picotool was compiled WITHOUT USB support — it cannot flash anything." >&2
+        echo "   Fix it (installs the libusb headers and rebuilds picotool):  $ME doctor --fix" >&2
+        echo "   ...or flash by hand: hold BOOTSEL, replug, drag the .uf2 to the RP2350 drive." >&2
         exit 1
     fi
     # If the probe is also on USB, picotool must be told which device is the target.
@@ -1038,6 +1056,17 @@ fix_sdk_submodules() {
 fix_picotool_build() {
     # Newer toolchains can fail to compile picotool's bundled mbedTLS (GCC 15 warnings, and
     # mbedTLS API drift against older picotool). Prefer the prebuilt distro package.
+    #
+    # libusb is what gives picotool device access. Without the headers CMake silently
+    # produces a no-USB binary ("compiled without USB support") that cannot flash — so
+    # install the dependency before configuring.
+    if command -v apt-get >/dev/null 2>&1; then
+        propose "install the picotool build dependency (libusb headers)" \
+            "sudo apt-get install -y libusb-1.0-0-dev" || true
+    elif command -v pacman >/dev/null 2>&1; then
+        propose "install the picotool build dependency (libusb headers)" \
+            "sudo pacman -S --needed libusb" || true
+    fi
     if fix_picotool_pkg; then return 0; fi
     if [ -z "${PICO_SDK_PATH:-}" ] || [ ! -f "$PICO_SDK_PATH/pico_sdk_init.cmake" ]; then
         echo "!! picotool's build needs a valid PICO_SDK_PATH — set it first with '$ME doctor --fix' (SDK fix), then retry" >&2
@@ -1052,13 +1081,19 @@ fix_picotool_build() {
     # -Wno-error: GCC 15 turns newer warnings (e.g. mbedTLS's unterminated-string-init)
     # into errors. If the source build still fails on mbedTLS API drift, use the distro
     # package instead:  fix_picotool_pkg  (sudo apt install picotool).
-    propose "build picotool $want — the version this SDK asks for — from git into ~/.local (no sudo)" \
+    if propose "build picotool $want — the version this SDK asks for — from git into ~/.local (no sudo)" \
         "git -C '$PICO_SDK_PATH' submodule update --init --recursive" \
         "rm -rf '$src' && git -c advice.detachedHead=false clone --depth 1 --branch $want https://github.com/raspberrypi/picotool.git '$src'" \
         "cmake -S '$src' -B '$src/build' ${GEN_ARGS[*]} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX='$HOME/.local' -DPICO_SDK_PATH='$PICO_SDK_PATH' -DCMAKE_C_FLAGS=-Wno-error -DCMAKE_CXX_FLAGS=-Wno-error" \
         "cmake --build '$src/build' -j$(nproc)" \
-        "cmake --install '$src/build'"
-    echo "   if this fails on mbedTLS/API errors, install the prebuilt instead:  sudo apt install picotool"
+        "cmake --install '$src/build'"; then
+        if [ -x "$HOME/.local/bin/picotool" ] && ! picotool_has_usb "$HOME/.local/bin/picotool"; then
+            echo "!! the built picotool has NO USB support — libusb headers were not found at configure time." >&2
+            echo "   Install libusb-1.0-0-dev (or your distro's equivalent), remove $src, and retry." >&2
+            return 1
+        fi
+        echo "   if this fails on mbedTLS/API errors, install the prebuilt instead:  sudo apt install picotool"
+    fi
 }
 fix_picotool_shadow() {
     # Remove every too-old install as a unit — binary, CMake package, data files — so
@@ -1117,11 +1152,19 @@ fix_picotool_cli() {
     local pcli dir link rc
     dir="$HOME/.local/bin"; link="$dir/picotool"   # not in the `local` line: $dir is not yet set there
     pcli="$(find_picotool_cli || true)"
+    if [ -n "$pcli" ] && ! picotool_has_usb "$pcli"; then
+        echo ">> $pcli was built without USB support (no 'load' command) — rebuilding with libusb"
+        pcli=""
+    fi
     case "${SHELL##*/}" in zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
     if [ -z "$pcli" ]; then
         # Try the prebuilt package first; fall back to building from source if it fails.
         if ! fix_picotool_pkg; then fix_picotool_build; fi
-        return
+        pcli="$(find_picotool_cli || true)"
+        if [ -z "$pcli" ]; then
+            echo "!! picotool is still not usable — probe-free flashing needs a USB-enabled build." >&2
+            return 1
+        fi
     fi
     if [ -x "$link" ] && [ "$(readlink -f "$pcli")" = "$(readlink -f "$link")" ]; then
         echo ">> picotool already at $link — nothing to do."
@@ -1276,7 +1319,9 @@ doctor() {
     want="$(sdk_picotool_want)"
     DR_PT_BUILD_V=""; DR_PT_CLI=""; DR_PT_CLI_V=""; DR_PT_OLD=()
     DR_PT_CLI="$(command -v picotool 2>/dev/null || true)"
-    [ -n "$DR_PT_CLI" ] && DR_PT_CLI_V="$("$DR_PT_CLI" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    # `|| true`: a picotool whose `version` prints no x.y.z (e.g. a broken build) must not
+    # kill doctor under pipefail — an empty version is handled below.
+    [ -n "$DR_PT_CLI" ] && DR_PT_CLI_V="$("$DR_PT_CLI" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
     if [ -z "$want" ]; then
         mark note "picotool" "SDK requirement unreadable (no SDK, or no tools/CMakeLists.txt) — checked after the SDK is fixed"
     else
@@ -1308,7 +1353,12 @@ doctor() {
     # The build check above can be green while this is missing — a build-only install, or the
     # binary not on PATH — so check it separately and offer to link or build one.
     if [ -n "$DR_PT_CLI" ]; then
-        mark ok "picotool (USB flash)" "$DR_PT_CLI v${DR_PT_CLI_V:-?} — for 'picolab flash --uf2'"
+        if picotool_has_usb "$DR_PT_CLI"; then
+            mark ok "picotool (USB flash)" "$DR_PT_CLI v${DR_PT_CLI_V:-?} — for 'picolab flash --uf2'"
+        else
+            mark FAIL "picotool (USB flash)" "$DR_PT_CLI v${DR_PT_CLI_V:-?} was compiled WITHOUT USB support (no 'load' command) — run doctor --fix to rebuild it with libusb, or flash by dragging the .uf2 (setup §5)"
+            FIXES+=(picotool_cli)
+        fi
     else
         local pcli; pcli="$(find_picotool_cli || true)"
         if [ -n "$pcli" ]; then
