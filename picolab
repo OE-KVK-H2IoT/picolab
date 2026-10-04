@@ -1112,20 +1112,27 @@ fix_picotool_cli() {
 # into ~/.pico-sdk/openocd/pi-fork, where openocd_bin()/ocd_scripts_arg() already look.
 # Needs autotools + libusb dev headers; installed first if missing.
 fix_openocd() {
-    local src="$HOME/.cache/picolab/openocd" dst="$HOME/.pico-sdk/openocd/pi-fork" deps=""
+    local src="$HOME/.cache/picolab/openocd" dst="$HOME/.pico-sdk/openocd/pi-fork" deps="" conf_extra=""
     if command -v apt-get >/dev/null 2>&1; then
-        deps="sudo apt-get install -y git build-essential libtool automake autoconf pkg-config libusb-1.0-0-dev texinfo"
+        deps="sudo apt-get install -y git build-essential libtool automake autoconf pkg-config libusb-1.0-0-dev libjim-dev texinfo"
     elif command -v pacman >/dev/null 2>&1; then
-        deps="sudo pacman -S --needed git base-devel libtool automake autoconf pkgconf libusb texinfo"
+        deps="sudo pacman -S --needed git base-devel libtool automake autoconf pkgconf libusb jimtcl texinfo"
     fi
-    [ -n "$deps" ] && propose "install the OpenOCD build dependencies (autotools, libusb)" "$deps"
-    propose "build the Raspberry Pi OpenOCD fork (has target/rp2350.cfg) into $dst" \
+    [ -n "$deps" ] && propose "install the OpenOCD build dependencies (autotools, libusb, jimtcl)" "$deps"
+    # jimtcl is required. Use the system one if present; otherwise build the bundled copy
+    # (--enable-internal-jimtcl, deprecated but works — needs the jimtcl submodule).
+    if ! pkg-config --exists jimtcl 2>/dev/null && [ ! -f /usr/include/jim.h ]; then
+        conf_extra="--enable-internal-jimtcl"
+    fi
+    if propose "build the Raspberry Pi OpenOCD fork (has target/rp2350.cfg) into $dst" \
         "rm -rf '$src' && git clone --depth 1 https://github.com/raspberrypi/openocd.git '$src'" \
+        "cd '$src' && git submodule update --init jimtcl" \
         "cd '$src' && ./bootstrap" \
-        "cd '$src' && ./configure --prefix='$dst' --enable-cmsis-dap --disable-werror" \
+        "cd '$src' && ./configure --prefix='$dst' --enable-cmsis-dap --disable-werror $conf_extra" \
         "make -C '$src' -j$(nproc)" \
-        "make -C '$src' install"
-    echo "   installed: $dst/bin/openocd  (picolab finds it automatically)"
+        "make -C '$src' install"; then
+        echo "   installed: $dst/bin/openocd  (picolab finds it automatically)"
+    fi
 }
 
 fix_freertos() {
