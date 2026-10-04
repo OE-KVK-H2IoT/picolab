@@ -886,7 +886,7 @@ monitor() {
 # ── versions ────────────────────────────────────────────────────────────────────
 # SDK to clone when there is none. setup.md pins 2.2.0 for the lab image; override with
 # PICOLAB_SDK_VERSION to move every student to another release at once.
-SDK_VERSION="${PICOLAB_SDK_VERSION:-2.2.0}"
+SDK_VERSION="${PICOLAB_SDK_VERSION:-2.3.0}"
 # picotool to build when the SDK cannot tell us the version it wants (no SDK yet). Must be a
 # real picotool release tag; override with PICOLAB_PICOTOOL_VERSION.
 PICOTOOL_VERSION="${PICOLAB_PICOTOOL_VERSION:-2.3.0}"
@@ -1733,7 +1733,8 @@ ${C_BOLD}More${C_OFF}
   picolab upgrade [ver] opt in to a newer Pico SDK than the course pin (default: latest);
                         --tools also refreshes picotool/OpenOCD. The pin stays the default.
   picolab doctor --fix --yes    run every fix without asking (fresh machine / CI)
-  picolab doctor --fix --all    also install the optional tools (OpenOCD even with no probe)
+  picolab doctor --fix --all    provision everything, probe or not: picotool (probe-free
+                                flashing) AND OpenOCD (for a Debug Probe)
   picolab install --tools --yes one shot: link picolab + install the whole toolchain
   picolab help env      settings: PICO_SDK_PATH, ADAPTER_SPEED, SERIAL, ...
 

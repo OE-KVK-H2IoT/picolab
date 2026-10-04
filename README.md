@@ -12,8 +12,13 @@ Ninja/Make, OpenOCD, picotool, GDB).
 ./picolab install              # symlink into ~/.local/bin (once)
 picolab doctor                 # check toolchain + board (green / orange / red)
 picolab doctor --fix           # offer each fix, ask before running
-./picolab install --tools      # link + run doctor --fix in one go
+./picolab install --tools --yes    # one shot: link + provision, no prompts
+picolab doctor --fix --all --yes   # also build OpenOCD (only needed with a Debug Probe)
 ```
+
+The **default flashing path is the Debug Probe (SWD)**. With no probe — a student at home,
+just a plain Pico — `--all` (or the normal fix for the missing shell `picotool`) provisions
+the probe-free path: `picolab flash --uf2` over plain USB.
 
 ## Daily use
 
