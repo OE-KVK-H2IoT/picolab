@@ -305,8 +305,9 @@ all_cmakes() {
 # helper, add_lN_app(<t> …) (l4/l5 use one to avoid repeating stdio/output lines).
 TGT_RE='add_(executable|l[0-9]+_app)\('
 
-# Targets one project declares, in file order.
-targets_in() { grep -oE "${TGT_RE}\s*[A-Za-z0-9_]+" "$1/CMakeLists.txt" 2>/dev/null | sed -E 's/.*\(\s*//'; }
+# Targets one project declares, in file order. `|| true`: no match is a normal result
+# (the caller reports "declares no add_executable"), not a reason to die under pipefail.
+targets_in() { { grep -oE "${TGT_RE}\s*[A-Za-z0-9_]+" "$1/CMakeLists.txt" 2>/dev/null | sed -E 's/.*\(\s*//'; } || true; }
 
 # target -> the course lab folder whose CMakeLists declares it.
 lab_dir_for() {
@@ -325,8 +326,10 @@ list_targets() {
 # -D defines), plus PICO_BOARD. Used to catch typos in KEY=VAL args.
 known_knobs() {
     { printf '%s\n' PICO_BOARD
-      all_cmakes | xargs -r grep -hoE 'foreach\(opt[^)]*\)' 2>/dev/null \
-          | sed -E 's/foreach\(opt//; s/\)//'
+      # `|| true`: a project with no foreach(opt …) must not kill the script under
+      # `set -o pipefail` — grep exiting 1 (no match) is a normal result here.
+      { all_cmakes | xargs -r grep -hoE 'foreach\(opt[^)]*\)' 2>/dev/null \
+          | sed -E 's/foreach\(opt//; s/\)//' || true; }
     } | tr ' ' '\n' | sed '/^$/d' | sort -u
 }
 
