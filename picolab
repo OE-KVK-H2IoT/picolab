@@ -1132,6 +1132,16 @@ fix_freertos() {
     propose "fetch the FreeRTOS kernel submodule (for the RTOS labs)" \
         "git -C '$DR_FR_ROOT' submodule update --init lib/FreeRTOS-Kernel"
 }
+# No course repo / no kernel submodule: clone the Raspberry Pi FreeRTOS-Kernel fork (it ships
+# the RP2350 port in-tree) and record FREERTOS_KERNEL_PATH in picolab's env file.
+fix_freertos_global() {
+    local dest="$HOME/.pico-sdk/freertos/FreeRTOS-Kernel"
+    if propose "get the FreeRTOS kernel (RP2350 port in-tree) and set FREERTOS_KERNEL_PATH" \
+        "[ -f '$dest/tasks.c' ] || { mkdir -p '$(dirname "$dest")' && git clone --depth 1 https://github.com/raspberrypi/FreeRTOS-Kernel.git '$dest'; }"; then
+        env_write FREERTOS_KERNEL_PATH "$dest"; rc_source_env
+        echo "   active for picolab now, and in new shells"
+    fi
+}
 fix_freertos_port() {
     propose "fetch the kernel's RP2350 port (a nested submodule)" \
         "git -C '$DR_FR_KERNEL' submodule update --init portable/ThirdParty/Community-Supported-Ports"
@@ -1143,7 +1153,7 @@ fix_freertos_port() {
 # `doctor --fix` then offers the fixes it knows, one at a time, asking before each.
 doctor() {
     local mode="${1:-}" ok=0 bad=0 warn=0 note=0
-    FIXES=(); DR_MISSING_PKGS=(); DR_BOARD=""; DR_OCD_OK=0
+    FIXES=(); DR_MISSING_PKGS=(); DR_BOARD=""; DR_OCD_OK=0; DR_FR_OK=0
     # ok   (green)  : works
     # FAIL (red)    : a lab step WILL fail until this is fixed
     # warn (orange) : fine for building / the simulator, but the board steps
@@ -1277,16 +1287,18 @@ doctor() {
     local frk=""
     if frk="$(freertos_kernel_dir)"; then
         if freertos_port_import >/dev/null; then
-            mark ok "FreeRTOS kernel" "$frk (RP2350_ARM_NTZ port found)"
+            DR_FR_OK=1; mark ok "FreeRTOS kernel" "$frk (RP2350_ARM_NTZ port found)"
         else
             mark FAIL "FreeRTOS kernel" "$frk has no RP2350 port — it is a nested submodule: git -C \"$frk\" submodule update --init portable/ThirdParty/Community-Supported-Ports (setup §7)"
             DR_FR_KERNEL="$frk"; FIXES+=(freertos_port)
         fi
     else
-        mark note "FreeRTOS kernel" "not set up (only the RTOS labs need it — setup §7)"
-        local r; for r in "${LAB_ROOTS[@]}"; do
-            if grep -q 'lib/FreeRTOS-Kernel' "$r/.gitmodules" 2>/dev/null; then DR_FR_ROOT="$r"; FIXES+=(freertos); break; fi
+        mark note "FreeRTOS kernel" "not set up — needed for the RTOS labs (setup §7)"
+        local r found=0
+        for r in "${LAB_ROOTS[@]}"; do
+            if grep -q 'lib/FreeRTOS-Kernel' "$r/.gitmodules" 2>/dev/null; then DR_FR_ROOT="$r"; FIXES+=(freertos); found=1; break; fi
         done
+        [ "$found" = 1 ] || FIXES+=(freertos_global)
     fi
 
     # The real thing: create a brand-new project exactly as `picolab init` does, then
@@ -1304,10 +1316,18 @@ doctor() {
 
     doctor_hardware
 
-    # --all: provision optional tools too. The meaningful case is OpenOCD without a probe
-    # (normally a note, since probe-free flashing uses picotool); --all installs it anyway.
-    if [ "$ALL" = 1 ] && [ "${DR_OCD_OK:-0}" != 1 ]; then
-        case " ${FIXES[*]-} " in *" openocd "*) ;; *) FIXES+=(openocd) ;; esac
+    # --all: provision everything, probe or not — OpenOCD (normally a note without a probe)
+    # and the FreeRTOS kernel (normally a note until the RTOS labs).
+    if [ "$ALL" = 1 ]; then
+        if [ "${DR_OCD_OK:-0}" != 1 ]; then
+            case " ${FIXES[*]-} " in *" openocd "*) ;; *) FIXES+=(openocd) ;; esac
+        fi
+        if [ "${DR_FR_OK:-0}" != 1 ]; then
+            case " ${FIXES[*]-} " in
+                *" freertos "*) ;; *" freertos_global "*) ;; *" freertos_port "*) ;;
+                *) FIXES+=(freertos_global) ;;
+            esac
+        fi
     fi
 
     echo
@@ -1815,7 +1835,7 @@ ${C_BOLD}More${C_OFF}
                         --tools also refreshes picotool/OpenOCD. The pin stays the default.
   picolab doctor --fix --yes    run every fix without asking (fresh machine / CI)
   picolab doctor --fix --all    provision everything, probe or not: picotool (probe-free
-                                flashing) AND OpenOCD (for a Debug Probe)
+                                flashing), OpenOCD (Debug Probe) AND the FreeRTOS kernel
   picolab install --tools --yes one shot: link picolab + install the whole toolchain
   picolab help env      settings: PICO_SDK_PATH, ADAPTER_SPEED, SERIAL, ...
 
