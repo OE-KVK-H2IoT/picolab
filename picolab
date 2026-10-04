@@ -246,12 +246,16 @@ picotool_bin() {
     return 1
 }
 
-# Does this picotool binary support device access? A build without libusb has no
+# Does this picotool support device access? A build without libusb has no
 # load/save/reboot at all ("compiled without USB support") — it can still convert
 # .elf to .uf2, so SDK builds are fine, but `picolab flash --uf2` cannot work.
+# Accepts a path or a bare command name (picotool_bin returns the name for display).
 picotool_has_usb() {
     local pt="$1" out
-    [ -x "$pt" ] || return 1
+    case "$pt" in
+        */*) [ -x "$pt" ] || return 1 ;;
+        *)   pt="$(command -v "$pt" 2>/dev/null || true)"; [ -n "$pt" ] || return 1 ;;
+    esac
     out="$("$pt" help 2>&1 || true)"
     printf '%s' "$out" | grep -qi 'compiled without USB support' && return 1
     printf '%s' "$out" | grep -qE '^[[:space:]]*load[[:space:]]' || return 1
