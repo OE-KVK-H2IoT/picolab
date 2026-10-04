@@ -184,8 +184,8 @@ find_acm_by_pid() {
     for d in /dev/ttyACM*; do
         [ -e "$d" ] || continue
         p="$(udevadm info -q property -n "$d" 2>/dev/null)"
-        echo "$p" | grep -q 'ID_USB_VENDOR_ID=2e8a'   || continue
-        echo "$p" | grep -q "ID_USB_MODEL_ID=$pid"    || continue
+        echo "$p" | grep -qi 'ID_USB_VENDOR_ID=2e8a'    || continue
+        echo "$p" | grep -qEi "ID_USB_MODEL_ID=($pid)([^0-9a-f]|$)" || continue
         model="$(echo "$p" | grep -m1 '^ID_USB_MODEL=' | cut -d= -f2)"
         case "$want" in
             probe) echo "$model" | grep -qiE 'cmsis|debug.probe' || continue ;;
@@ -872,14 +872,28 @@ monitor() {
     esac
     if [ -z "$dev" ]; then
         if [ "$prefer" = usb ]; then
-            dev="$(find_acm_by_pid 0009 pico || true)"; kind="the Pico's own USB-CDC"
+            dev="$(find_acm_by_pid '0009|000a' pico || true)"; kind="the Pico's own USB-CDC"
         else
             dev="$(find_acm_by_pid 000c        || true)"; kind="Debug Probe UART bridge"
             [ -n "$dev" ] || { dev="$(find_acm_by_pid 0009 probe || true)"; kind="probe UART bridge (CMSIS-DAP firmware on PID 0009)"; }
-            [ -n "$dev" ] || { dev="$(find_acm_by_pid 0009 pico  || true)"; kind="the Pico's own USB-CDC"; }
+            [ -n "$dev" ] || { dev="$(find_acm_by_pid '0009|000a' pico || true)"; kind="the Pico's own USB-CDC"; }
         fi
     else kind="you asked for it"; fi
-    [ -z "$dev" ] && { echo "!! no Pico/probe serial port found (probe plugged in? UART wired to GP0/GP1?)"; exit 1; }
+    if [ -z "$dev" ]; then
+        if [ "$prefer" = usb ]; then
+            echo "!! no Pico USB-CDC serial port found."
+            echo "   'monitor usb' reads the Pico's OWN USB cable — not the probe, and not the"
+            echo "   UART pins. Check, in order:"
+            echo "     - the Pico's own USB cable is plugged into the PC (BOOTSEL + probe USB is not enough);"
+            echo "     - the board is running YOUR firmware, not sitting in BOOTSEL (in BOOTSEL it is a disk);"
+            echo "     - the firmware enables USB stdio:  pico_enable_stdio_usb(<target> 1)"
+            echo "     - the OS sees a port:  ls /dev/ttyACM*   (then: $ME monitor /dev/ttyACM0)"
+        else
+            echo "!! no Pico/probe serial port found (probe plugged in? UART wired to GP0/GP1?)"
+            echo "   no probe? read the Pico's own USB-CDC instead:  $ME monitor usb"
+        fi
+        exit 1
+    fi
     echo ">> serial monitor on $dev — $kind"
     # Silence here is a wiring answer, not a firmware one: the UART bridge only carries
     # bytes if the probe's U cable is on GP0/GP1, and the Pico's USB-CDC only exists if
