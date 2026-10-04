@@ -1454,11 +1454,12 @@ doctor_hardware() {
 # numbered step at a time, printing each command and why. `--step` pauses before every
 # step (for a first lab); the files it writes are shown in full, with every line explained.
 init_project() {
-    local dir="" step=0 a
+    local dir="" step=0 blink=0 a
     for a in "$@"; do
         case "$a" in
             --step) step=1 ;;
-            -*) echo "!! unknown option '$a' — usage: $ME init <folder> [--step]" >&2; exit 2 ;;
+            --blink) blink=1 ;;
+            -*) echo "!! unknown option '$a' — usage: $ME init <folder> [--step] [--blink]" >&2; exit 2 ;;
             *) dir="$a" ;;
         esac
     done
@@ -1524,12 +1525,13 @@ pico_add_extra_outputs(@TARGET@)        # also make .uf2 (drag-and-drop), .dis (
 EOF
     show "cat > $dir/CMakeLists.txt  <<'EOF'   (the file:)"; showfile "$dir/CMakeLists.txt"
 
-    stepn "write main.c — a blink that narrates itself" \
-          "GP16/GP17 are the EP-0172 carrier's user LEDs. (The Pico 2 W's own LED is wired" \
-          "to the wireless chip, not a GPIO — gpio_put(25, …) silently does nothing.)"
-    sed -e "s/@NAME@/$name/g" > "$dir/main.c" <<'EOF'
+    if [ "$blink" = 1 ]; then
+        stepn "write main.c — a blink that narrates itself" \
+              "GP16/GP17 are the EP-0172 carrier's user LEDs. (The Pico 2 W's own LED is wired" \
+              "to the wireless chip, not a GPIO — gpio_put(25, …) silently does nothing.)"
+        sed -e "s/@NAME@/$name/g" > "$dir/main.c" <<'EOF'
 // @NAME@ — blink the EP-0172 user LEDs (GP16, GP17) in opposite phase and narrate every
-// step on serial. Created by `picolab init` — now make it yours.
+// step on serial. Created by `picolab init --blink` — now make it yours.
 #include <stdio.h>
 #include "pico/stdlib.h"
 
@@ -1556,6 +1558,25 @@ int main(void) {
     }
 }
 EOF
+    else
+        stepn "write main.c — an empty main() to build on" \
+              "Nothing runs yet: the folder, the SDK finder and the build description are in" \
+              "place, and the program is yours to write. (Want the EP-0172 blink demo?" \
+              "Use: $ME init <folder> --blink)"
+        sed -e "s/@NAME@/$name/g" > "$dir/main.c" <<'EOF'
+// @NAME@ — created by `picolab init`.
+// The project builds; main() is empty on purpose. Your program goes here — no demo
+// to delete first. (For the EP-0172 blink demo: `picolab init <folder> --blink`.)
+#include "pico/stdlib.h"
+
+int main(void) {
+    /* your program goes here */
+    for (;;) {
+        tight_loop_contents();   /* portable "do nothing" — the CPU idles here */
+    }
+}
+EOF
+    fi
     show "cat > $dir/main.c  <<'EOF'   (the file:)"; showfile "$dir/main.c"
 
     stepn "write .gitignore" \
@@ -1567,8 +1588,9 @@ EOF
     echo "${C_OK}>> '$name' is ready.${C_OFF} Next:"
     echo "     cd $dir"
     echo "     $ME build          # configure + compile (prints the exact cmake commands)"
-    echo "     $ME flash          # ...and program the board over SWD"
-    echo "     $ME debug          # ...and stop in main() under GDB"
+    echo "     $ME flash --uf2    # program over plain USB — no debug probe needed"
+    echo "     $ME flash          # ...or over SWD with the Debug Probe"
+    echo "     $ME debug          # ...and stop in main() under GDB (probe only)"
     echo "   or paste main.c into the simulator to try it with no board at all."
 }
 
@@ -1800,8 +1822,9 @@ ${C_BOLD}First time${C_OFF}
   ./picolab install --tools   the same, then check the toolchain and offer each fix
                               (SDK, OpenOCD, picotool, FreeRTOS kernel) — one command
   picolab doctor              check toolchain + board: ${C_OK}green${C_OFF} ok, ${C_ORANGE}orange${C_OFF} board not ready, ${C_ERR}red${C_OFF} fix this
-  picolab init my-blink       make a new project folder, explained step by step (--step to pause)
-  cd my-blink && picolab flash
+  picolab init my-project     make a new project folder with an empty main(), explained step by
+                              step (--step to pause; --blink adds the EP-0172 blink demo)
+  cd my-project && picolab flash --uf2
 
 ${C_BOLD}Every day${C_OFF}  (inside a project folder, or name a course lab: picolab flash l0_blink)
   picolab build      cmake configures build/ once, then ninja compiles + links -> <name>.elf;
