@@ -412,6 +412,15 @@ build_target() {
                     echo "     git -C \"$(freertos_kernel_dir)\" submodule update --init portable/ThirdParty/Community-Supported-Ports"
                 fi ;;
         esac
+        # Missing CYW43 library: the header lives *with* the library, so linking it is
+        # what adds the include path. The most common Pico W networking-lab failure.
+        if grep -rq 'pico/cyw43_arch.h' "$lab"/*.c "$lab"/*.h 2>/dev/null \
+           && ! grep -q 'pico_cyw43_arch' "$lab/CMakeLists.txt" 2>/dev/null; then
+            echo "!! the CYW43 driver is not linked: the code includes pico/cyw43_arch.h, but"
+            echo "   CMakeLists.txt has no pico_cyw43_arch_* library in target_link_libraries. Add:"
+            echo "     pico_cyw43_arch_lwip_sys_freertos   # Wi-Fi + lwIP + CYW43 (the networking lab)"
+            echo "     pico_cyw43_arch_none                # radio driver only (the onboard LED)"
+        fi
         exit 1
     fi
     BUILD_DIR="$lab/build"
