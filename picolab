@@ -899,6 +899,8 @@ monitor() {
             echo "     - the Pico's own USB cable is plugged into the PC (BOOTSEL + probe USB is not enough);"
             echo "     - the board is running YOUR firmware, not sitting in BOOTSEL (in BOOTSEL it is a disk);"
             echo "     - the firmware enables USB stdio:  pico_enable_stdio_usb(<target> 1)"
+            echo "     - and STARTS it at run time:      stdio_init_all();   (the build flag alone is"
+            echo "                                      not enough — a program with an empty main never opens the port)"
             echo "     - the OS sees a port:  ls /dev/ttyACM*   (then: $ME monitor /dev/ttyACM0)"
         else
             echo "!! no Pico/probe serial port found (probe plugged in? UART wired to GP0/GP1?)"
