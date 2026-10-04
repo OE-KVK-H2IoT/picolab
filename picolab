@@ -688,7 +688,9 @@ flash_no_probe() {
         fi
         echo "${C_ERR}!! picotool could not flash.${C_OFF}" >&2
         echo "   If it said 'unable to connect ... permissions', install the udev rule (setup §4):" >&2
-        echo "     $ME doctor --fix     # the 'Pico permission' fix; then replug the Pico" >&2
+        echo "     $ME doctor --fix     # the 'Pico permission' fix; no replug needed" >&2
+        echo "   ...or apply it to the connected device right now:" >&2
+        echo "     sudo udevadm control --reload-rules && sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=2e8a" >&2
         echo "   Otherwise, if the board is unresponsive or its USB interface is not one picotool" >&2
         echo "   can talk to, enter BOOTSEL by hand: hold BOOTSEL, tap RUN / replug, then drag the" >&2
         echo "   .uf2 to the RP2350 mass-storage drive.${C_OFF}" >&2
@@ -1258,8 +1260,10 @@ fix_picotool_cli() {
 fix_udev() {
     propose "install the udev rule for Raspberry Pi USB devices (no sudo for flash, OpenOCD, serial)" \
         "printf '%s\n' '# Raspberry Pi (Pico, RP2350 bootrom, Debug Probe) — grant the active local user access' 'SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\"' 'SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\"' | sudo tee /etc/udev/rules.d/99-pico.rules >/dev/null" \
-        "sudo udevadm control --reload-rules && sudo udevadm trigger"
-    echo "   unplug and replug the Pico (and the Debug Probe) to pick the rule up."
+        "sudo udevadm control --reload-rules" \
+        "sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=2e8a" \
+        "sudo udevadm trigger --action=add --subsystem-match=tty"
+    echo "   applied to already-connected devices too — a replug is not required."
 }
 
 # Build the Raspberry Pi OpenOCD fork — it is the one that carries target/rp2350.cfg —
