@@ -1117,21 +1117,22 @@ fix_picotool_shadow() {
         "${sudo}rm -rf ${paths[*]}"
 }
 
-# Locate any usable picotool *binary* (not just the CMake package), for the shell path that
-# `picolab flash --uf2` uses. Prefers one already on PATH.
+# Locate a *usable* picotool binary for the shell path that `picolab flash --uf2` uses:
+# USB-enabled, so a build without libusb (no 'load' command) is skipped, not returned.
+# Prefers one already on PATH.
 find_picotool_cli() {
     local d
-    if [ -n "${DR_PT_CLI:-}" ] && [ -x "$DR_PT_CLI" ]; then echo "$DR_PT_CLI"; return 0; fi
-    d="$(command -v picotool 2>/dev/null || true)"; [ -n "$d" ] && { echo "$d"; return 0; }
+    if [ -n "${DR_PT_CLI:-}" ] && [ -x "$DR_PT_CLI" ] && picotool_has_usb "$DR_PT_CLI"; then echo "$DR_PT_CLI"; return 0; fi
+    d="$(command -v picotool 2>/dev/null || true)"; [ -n "$d" ] && picotool_has_usb "$d" && { echo "$d"; return 0; }
     local c pre
     while read -r c; do
         pre="${c%%/lib/cmake/*}"; pre="${pre%%/lib64/cmake/*}"; pre="${pre%%/share/picotool/*}"
-        [ -x "$pre/bin/picotool" ] && { echo "$pre/bin/picotool"; return 0; }
+        [ -x "$pre/bin/picotool" ] && picotool_has_usb "$pre/bin/picotool" && { echo "$pre/bin/picotool"; return 0; }
     done < <(picotool_cfgs)
     d=$(ls "$HOME"/.pico-sdk/picotool/*/picotool 2>/dev/null | head -1 || true)
-    [ -n "$d" ] && { echo "$d"; return 0; }
+    [ -n "$d" ] && picotool_has_usb "$d" && { echo "$d"; return 0; }
     d=$(ls "$HOME"/.local/bin/picotool 2>/dev/null | head -1 || true)
-    [ -n "$d" ] && { echo "$d"; return 0; }
+    [ -n "$d" ] && picotool_has_usb "$d" && { echo "$d"; return 0; }
     return 1
 }
 # Prefer the distro's prebuilt picotool. It avoids the mbedTLS/GCC-15 source-build pain
@@ -1151,14 +1152,10 @@ fix_picotool_pkg() {
 fix_picotool_cli() {
     local pcli dir link rc
     dir="$HOME/.local/bin"; link="$dir/picotool"   # not in the `local` line: $dir is not yet set there
-    pcli="$(find_picotool_cli || true)"
-    if [ -n "$pcli" ] && ! picotool_has_usb "$pcli"; then
-        echo ">> $pcli was built without USB support (no 'load' command) — rebuilding with libusb"
-        pcli=""
-    fi
-    case "${SHELL##*/}" in zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
+    pcli="$(find_picotool_cli || true)"            # skips no-USB builds
     if [ -z "$pcli" ]; then
-        # Try the prebuilt package first; fall back to building from source if it fails.
+        # No USB-enabled binary: install the prebuilt package, else rebuild from source
+        # (both paths ensure libusb is present first).
         if ! fix_picotool_pkg; then fix_picotool_build; fi
         pcli="$(find_picotool_cli || true)"
         if [ -z "$pcli" ]; then
@@ -1166,13 +1163,21 @@ fix_picotool_cli() {
             return 1
         fi
     fi
-    if [ -x "$link" ] && [ "$(readlink -f "$pcli")" = "$(readlink -f "$link")" ]; then
+    case "${SHELL##*/}" in zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
+    if [ -e "$link" ] && [ "$(readlink -f "$pcli")" = "$(readlink -f "$link")" ]; then
         echo ">> picotool already at $link — nothing to do."
         return 0
     fi
-    propose "make picotool runnable from the shell (link $pcli -> $link) for probe-free flashing" \
-        "mkdir -p '$dir'" \
-        "ln -sfn '$pcli' '$link'"
+    if [ -e "$link" ]; then
+        # Something unusable sits at $link (typically a no-USB build that shadows the good
+        # binary on PATH): replace it, so `picotool` becomes the USB-enabled one.
+        propose "replace the unusable picotool at $link with $pcli (USB-enabled)" \
+            "ln -sfn '$pcli' '$link'"
+    else
+        propose "make picotool runnable from the shell (link $pcli -> $link) for probe-free flashing" \
+            "mkdir -p '$dir'" \
+            "ln -sfn '$pcli' '$link'"
+    fi
     case ":$PATH:" in
         *":$dir:"*) ;;
         *) echo "   note: $dir is not on PATH — add once:  echo 'export PATH=\"$dir:\$PATH\"' >> $rc" ;;
