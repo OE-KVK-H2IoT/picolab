@@ -231,13 +231,18 @@ openocd_bin() {
     exit 1
 }
 
-# Same story for the ARM GDB: prefer one on PATH, else the Pico toolchain's.
+# Same story for the ARM GDB: prefer one on PATH, else the Pico toolchain's. Debian/Ubuntu
+# ship it as gdb-multiarch, everyone else as arm-none-eabi-gdb — accept both, or the whole
+# debug/flash path dies on a machine whose `doctor` is all green (it knew both names).
 gdb_bin() {
     if command -v arm-none-eabi-gdb >/dev/null 2>&1; then echo arm-none-eabi-gdb; return; fi
+    if command -v gdb-multiarch >/dev/null 2>&1; then echo gdb-multiarch; return; fi
     local b
-    b=$(ls "$HOME"/.pico-sdk/toolchain/*/bin/arm-none-eabi-gdb 2>/dev/null | head -1 || true)
-    [ -n "$b" ] && { echo "$b"; return; }
-    echo "!! arm-none-eabi-gdb not found — not on PATH and no ~/.pico-sdk/toolchain/*/bin/." >&2
+    for b in "$HOME"/.pico-sdk/toolchain/*/bin/arm-none-eabi-gdb "$HOME"/.pico-sdk/toolchain/*/bin/gdb-multiarch; do
+        [ -x "$b" ] && { echo "$b"; return; }
+    done
+    echo "!! no ARM-capable GDB — need arm-none-eabi-gdb or gdb-multiarch on PATH (setup §1)." >&2
+    echo "   Debian/Ubuntu: sudo apt install gdb-multiarch · Arch: sudo pacman -S arm-none-eabi-gdb" >&2
     exit 1
 }
 
@@ -717,13 +722,14 @@ gdb_script() {   # gdb_script <file> <gdb command>...   — write it, and show i
 }
 
 flash_via_server() {
-    local elf="$1" gs="$BUILD_DIR/flash.gdb"
+    local elf="$1" gs="$BUILD_DIR/flash.gdb" gdb
+    gdb="$(gdb_bin)"
     echo ">> flashing $elf through the running OpenOCD server — its terminal shows the SWD side"
     explain "GDB connects to the server (port 3333) and 'load' sends the .elf; OpenOCD writes it into flash over SWD, then the chip is reset and GDB lets go"
-    show "$(gdb_bin)" -q -batch "$elf" -x "$gs"
+    show "$gdb" -q -batch "$elf" -x "$gs"
     gdb_script "$gs" "target extended-remote localhost:3333" "monitor reset halt" \
                      "load" "monitor reset run" "detach"
-    if ! "$(gdb_bin)" -q -batch "$elf" -x "$gs"; then
+    if ! "$gdb" -q -batch "$elf" -x "$gs"; then
         echo "${C_ERR}!! flashing through the OpenOCD server failed — your new build is NOT on the board" >&2
         echo "   (it holds the old firmware, or a half-written image if the erase/write got partway)." >&2
         echo "   Trust the FIRST error above, and check the server's terminal for the SWD-side reason.${C_OFF}" >&2
@@ -826,8 +832,9 @@ load_image() {
 }
 
 debug_target() {
-    local elf
+    local elf gdb
     pick_elf "${1:-}" debug; elf="$ELF"
+    gdb="$(gdb_bin)"   # none installed: gdb_bin prints the fix and this assignment stops here
     local btype; btype="$(sed -n 's/^CMAKE_BUILD_TYPE:STRING=//p' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null)"
     case "$btype" in Release|MinSizeRel|"")
         [ -f "$BUILD_DIR/CMakeCache.txt" ] || btype="unknown"
@@ -869,7 +876,7 @@ debug_target() {
             hint="every stop redraws the dashboard: n step over, s step into, c run, q quit."
             echo "   view: gdb-dashboard — $DASH_WHERE" ;;
     esac
-    show "$(gdb_bin)" -q "${ui[@]}" "$elf" -x "$gs"
+    show "$gdb" -q "${ui[@]}" "$elf" -x "$gs"
     # A TUI draws the whole screen: OpenOCD's own stderr (its banner comes before
     # log_output takes over) would scribble over it, so in that view it goes to the log.
     [ "$DEBUG_UI" = tui ] && [ "${remote#|}" != "$remote" ] && remote+=" 2>>$BUILD_DIR/debug.openocd.log"
@@ -879,7 +886,7 @@ debug_target() {
     echo "   (if this stops with an error instead of the 'new build loaded' line, your new"
     echo "    build is NOT on the board — don't debug it; fix the first error and retry.)"
     # -q quiet banner; the script loads the image, resets, and stops at main().
-    "$(gdb_bin)" -q "${ui[@]}" "$elf" -x "$gs"
+    "$gdb" -q "${ui[@]}" "$elf" -x "$gs"
 }
 
 # ── debug views ─────────────────────────────────────────────────────────────────────
@@ -1487,9 +1494,11 @@ doctor() {
         mark note "openocd" "not installed — not needed without a probe (probe-free uses picotool); '$ME doctor --fix' can build it if you add one"
     fi
 
-    if command -v arm-none-eabi-gdb >/dev/null 2>&1; then
-        mark ok "gdb" "arm-none-eabi-gdb $(arm-none-eabi-gdb --version | head -1 | grep -oE '[0-9][0-9.]+' | head -1)"
-    elif command -v gdb-multiarch >/dev/null 2>&1; then mark ok "gdb" "gdb-multiarch (Debian/Ubuntu)"
+    # Ask the same gdb_bin the debug/flash pipelines launch, so "doctor is green" can never
+    # again disagree with what 'picolab debug' actually runs (Debian/Ubuntu: gdb-multiarch).
+    local gdbbin=""
+    if gdbbin="$(gdb_bin 2>/dev/null)"; then
+        mark ok "gdb" "$(basename "$gdbbin") $("$gdbbin" --version 2>/dev/null | head -1 | grep -oE '[0-9][0-9.]+' | head -1)"
     else mark FAIL "gdb" "missing — arm-none-eabi-gdb / gdb-multiarch (setup §1)"; DR_MISSING_PKGS+=(gdb); fi
 
     # picotool is not merely "nice to have": since SDK 2.x the build calls it to make the
