@@ -166,6 +166,14 @@ ocd_server_up() {
         (exec 3<>/dev/tcp/127.0.0.1/4444) 2>/dev/null   # no ss: fall back to a connect
     fi
 }
+# The pid listening on OpenOCD's telnet port — only if ss names it as openocd (never guess:
+# killing whatever else might hold 4444 would be worse than saying "do it yourself").
+ocd_server_pid() {
+    command -v ss >/dev/null 2>&1 || return 1
+    local out; out="$(ss -Hltnp 'sport = :4444' 2>/dev/null || true)"
+    case "$out" in *openocd*) ;; *) return 1 ;; esac
+    printf '%s\n' "$out" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2
+}
 
 # Prefer Ninja when present so CLI builds match the Pico VS Code extension (which ships its
 # own Ninja); fall back to CMake's default generator (Make) if ninja isn't installed.
@@ -729,9 +737,41 @@ flash_via_server() {
 # starting their own OpenOCD.
 ocd_server() {
     if ocd_server_up; then
-        echo "!! an OpenOCD server is already running (port 4444 answers) — use that one." >&2
-        echo "   Find it: pgrep -a openocd    Stop it: Ctrl-C in its terminal, or pkill -x openocd" >&2
-        exit 1
+        # A server is already listening — usually the student's other terminal, or one left
+        # behind by a crash. "Use that one" made people hunt for a terminal; instead offer
+        # to take over HERE: stop the old one, then start ours (--force: no question).
+        local pid; pid="$(ocd_server_pid || true)"
+        echo ">> an OpenOCD server is already running (port 4444 answers${pid:+, pid $pid})."
+        local ans="" take=0
+        if [ "$FORCE" = 1 ]; then
+            take=1
+        elif [ -t 0 ]; then
+            read -r -p "   stop it and start a fresh server in this terminal? [Y/n] " ans || ans=""
+            case "$ans" in n|N|no|NO|No) take=0 ;; *) take=1 ;; esac
+        else
+            # no terminal to ask on (piped/scripted): keep the old, explicit refusal
+            echo "   Stop it to start a fresh one here:  pkill -x openocd   (or run:  $ME ocd --force)" >&2
+            exit 1
+        fi
+        if [ "$take" = 1 ]; then
+            if [ -n "$pid" ]; then
+                show_abs kill "$pid"; kill "$pid" 2>/dev/null || true
+            else
+                show_abs pkill -x openocd; pkill -x openocd 2>/dev/null || true
+            fi
+            local i=0
+            while ocd_server_up && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+            if ocd_server_up; then
+                echo "!! port 4444 is still answering — the old server did not stop, so this one will not start a second." >&2
+                echo "   Find it: pgrep -a openocd    Stop it: pkill -x openocd" >&2
+                exit 1
+            fi
+            echo ">> old server stopped — starting a fresh one in this terminal."
+        else
+            echo ">> keeping it — use that one for build/flash/debug (these find it)."
+            echo "   To replace it here instead:  $ME ocd --force"
+            exit 0
+        fi
     fi
     local s=(); mapfile -t s < <(ocd_scripts_arg)
     echo ">> OpenOCD server — leave this terminal open; build/flash/debug from another one."
@@ -741,9 +781,15 @@ ocd_server() {
     while true; do
         show "$(openocd_bin)" "${s[@]}" -f "$OCD_IFACE" -f "$OCD_TARGET" -c "\"adapter speed $ADAPTER_SPEED\"" $OCD_QUIRK_SHOW
         set +e
+        # No pipefail for this pipeline: when another terminal takes over (its
+        # `picolab ocd --force` kills this OpenOCD), bash under pipefail prints a stray
+        # "Done <pipeline>" job notice right where the goodbye message goes. PIPESTATUS
+        # below is unaffected by the option.
+        set +o pipefail
         "$(openocd_bin)" "${s[@]}" -f "$OCD_IFACE" -f "$OCD_TARGET" \
             -c "adapter speed $ADAPTER_SPEED" "${OCD_QUIRK[@]}" 2>&1 | ocd_color server
         st=("${PIPESTATUS[@]}")
+        set -o pipefail
         set -e
         # Status 3 = the probe vanished or was never there: OpenOCD is dead in the water.
         # Stop it (it may still be polling), wait for the probe to come back, start again.
@@ -1957,6 +2003,7 @@ uninstall_cli() {
 
 cmd="${1:-}"; shift || true
 NOBUILD=0; VERBOSE=0; ELF=""; DEBUG_UI=""; PROBE_FREE=0; INSTALL_TOOLS=0; YES=0; ALL=0
+FORCE=0    # `picolab ocd --force`: replace an OpenOCD server that is already running
 
 # The manual half of picolab: what each tool step does and what every part of its
 # command line means. Used by --step (before running) and by `picolab explain` (instead
@@ -2123,7 +2170,9 @@ ${C_BOLD}Every day${C_OFF}  (inside a project folder, or name a course lab: pico
 
 ${C_BOLD}Two terminals${C_OFF}  (recommended: see what OpenOCD does while you work)
   terminal 1:  picolab ocd       OpenOCD stays connected to the chip; its log shows every
-                                 flash, GDB connection and error, live
+                                 flash, GDB connection and error, live.  If a server is
+                                 already running it offers to replace it here (--force: do
+                                 it without asking)
   terminal 2:  picolab flash / picolab debug   these find the server and go through it
 
 ${C_BOLD}More${C_OFF}
@@ -2192,6 +2241,7 @@ for a in "$@"; do
         --tools)      INSTALL_TOOLS=1 ;;
         --yes|-y)     YES=1 ;;
         --all)        ALL=1 ;;
+        --force)      FORCE=1 ;;
         --tui)        DEBUG_UI=tui ;;
         --debug-build) export PICOLAB_BUILD_TYPE=Debug ;;
         --dashboard)  DEBUG_UI=dashboard ;;
