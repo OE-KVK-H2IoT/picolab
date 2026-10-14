@@ -1175,11 +1175,16 @@ fix_picotool_build() {
     # too, but make the picotool fix self-sufficient.
     # -Wno-error: GCC 15 turns newer warnings (e.g. mbedTLS's unterminated-string-init)
     # into errors. If the source build still fails on mbedTLS API drift, use the distro
-    # package instead:  fix_picotool_pkg  (sudo apt install picotool).
+    # package instead:  fix_picotool_pkg.
+    # -DCMAKE_POLICY_VERSION_MINIMUM=3.5: CMake 4 dropped compatibility with
+    # cmake_minimum_required(VERSION < 3.5), and the mbedTLS bundled with older SDKs
+    # (2.1.x pins mbedTLS 2.28, i.e. VERSION 2.8.12) still declares less — configure then
+    # dies in pico-sdk/lib/mbedtls with "Compatibility with CMake < 3.5 has been removed".
+    # The flag restores exactly that compatibility; newer SDKs/CMake simply ignore it.
     if propose "build picotool $want — the version this SDK asks for — from git into ~/.local (no sudo)" \
         "git -C '$PICO_SDK_PATH' submodule update --init --recursive" \
         "rm -rf '$src' && git -c advice.detachedHead=false clone --depth 1 --branch $want https://github.com/raspberrypi/picotool.git '$src'" \
-        "cmake -S '$src' -B '$src/build' ${GEN_ARGS[*]} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX='$HOME/.local' -DPICO_SDK_PATH='$PICO_SDK_PATH' -DCMAKE_C_FLAGS=-Wno-error -DCMAKE_CXX_FLAGS=-Wno-error" \
+        "cmake -S '$src' -B '$src/build' ${GEN_ARGS[*]} -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX='$HOME/.local' -DPICO_SDK_PATH='$PICO_SDK_PATH' -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_C_FLAGS=-Wno-error -DCMAKE_CXX_FLAGS=-Wno-error" \
         "cmake --build '$src/build' -j$(nproc)" \
         "cmake --install '$src/build'"; then
         if [ -x "$HOME/.local/bin/picotool" ] && ! picotool_has_usb "$HOME/.local/bin/picotool"; then
@@ -1187,7 +1192,12 @@ fix_picotool_build() {
             echo "   Install libusb-1.0-0-dev (or your distro's equivalent), remove $src, and retry." >&2
             return 1
         fi
-        echo "   if this fails on mbedTLS/API errors, install the prebuilt instead:  sudo apt install picotool"
+        local hint=""
+        if command -v pacman >/dev/null 2>&1; then hint="yay -S picotool (AUR)"
+        else hint="$(pkg_install_cmd picotool)"; fi
+        if [ -n "$hint" ]; then
+            echo "   if this fails on mbedTLS/API errors, install the prebuilt instead:  $hint"
+        fi
     fi
 }
 fix_picotool_shadow() {
@@ -1232,13 +1242,32 @@ find_picotool_cli() {
 }
 # Prefer the distro's prebuilt picotool. It avoids the mbedTLS/GCC-15 source-build pain
 # entirely, and the package usually ships the CMake config the SDK's build looks for.
+# Only propose a package the distro really has: Arch keeps picotool in the AUR (pacman
+# cannot see it) and not every Debian/Ubuntu release has it — a failed "target not found"
+# sudo step helps nobody, and the source build below does it without sudo anyway.
 fix_picotool_pkg() {
-    local cmd=""
-    if command -v apt-get >/dev/null 2>&1; then cmd="sudo apt-get install -y picotool"
-    elif command -v pacman >/dev/null 2>&1; then cmd="sudo pacman -S --needed picotool"
-    elif command -v zypper >/dev/null 2>&1; then cmd="sudo zypper install -y picotool"
+    local cmd="" in_repos="" out=""
+    if command -v apt-get >/dev/null 2>&1; then
+        cmd="sudo apt-get install -y picotool"
+        apt-cache show picotool >/dev/null 2>&1 && in_repos=1
+    elif command -v pacman >/dev/null 2>&1; then
+        cmd="sudo pacman -S --needed picotool"
+        pacman -Si picotool >/dev/null 2>&1 && in_repos=1
+    elif command -v zypper >/dev/null 2>&1; then
+        cmd="sudo zypper install -y picotool"
+        out="$(LC_ALL=C zypper --non-interactive search --match-exact picotool 2>/dev/null || true)"
+        case "$out" in *picotool*) in_repos=1 ;; esac
     fi
     [ -n "$cmd" ] || return 1
+    if [ -z "$in_repos" ]; then
+        if command -v pacman >/dev/null 2>&1; then
+            echo; echo ">> picotool is not in Arch's official repositories (the AUR has it: yay -S picotool)"
+        else
+            echo; echo ">> picotool is not in this distro's package repositories"
+        fi
+        echo ">> building it from source instead (no sudo, into ~/.local)"
+        return 1
+    fi
     propose "install the prebuilt picotool from your distro (no compile, no mbedTLS)" "$cmd"
 }
 
@@ -1902,7 +1931,8 @@ install_cli() {
         echo ">> --tools: checking the toolchain now, and offering each fix (picotool included)…"
         doctor --fix
     else
-        echo "   one shot — link picolab AND set up the toolchain (picotool included):  $ME install --tools"
+        echo "   one shot — link picolab AND set up the whole toolchain (picotool included):"
+        echo "     $ME install --tools --all --yes"
     fi
 }
 
@@ -2047,8 +2077,10 @@ ${C_BOLD}picolab${C_OFF} — build, flash, debug and watch a Pico program, showi
 
 ${C_BOLD}First time${C_OFF}
   ./picolab install           put picolab on your PATH (once, from tools/picolab/)
-  ./picolab install --tools   the same, then check the toolchain and offer each fix
-                              (SDK, OpenOCD, picotool, FreeRTOS kernel) — one command
+  ./picolab install --tools --all --yes
+                              one shot, no prompts: link picolab + provision the whole
+                              toolchain (SDK, picotool, OpenOCD, FreeRTOS kernel, udev rule)
+  ./picolab install --tools   the same, but check first and ask before every fix
   picolab doctor              check toolchain + board: ${C_OK}green${C_OFF} ok, ${C_ORANGE}orange${C_OFF} board not ready, ${C_ERR}red${C_OFF} fix this
   picolab init my-project     make a new project folder with an empty main(), explained step by
                               step (--step to pause; --blink adds the EP-0172 blink demo)
@@ -2094,7 +2126,7 @@ ${C_BOLD}More${C_OFF}
   picolab doctor --fix --yes    run every fix without asking (fresh machine / CI)
   picolab doctor --fix --all    provision everything, probe or not: picotool (probe-free
                                 flashing), OpenOCD (Debug Probe) AND the FreeRTOS kernel
-  picolab install --tools --yes one shot: link picolab + install the whole toolchain
+  picolab install --tools --all --yes   one shot, no prompts: link picolab + whole toolchain
   picolab help env      settings: PICO_SDK_PATH, ADAPTER_SPEED, SERIAL, ...
 
 ${C_BOLD}Learn what it does${C_OFF}

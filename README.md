@@ -8,17 +8,34 @@ Ninja/Make, OpenOCD, picotool, GDB).
 
 ## Install
 
+The default install is one shot, no prompts — link `picolab` onto your PATH and provision
+the whole toolchain:
+
+```bash
+./picolab install --tools --all --yes
+```
+
+It symlinks `picolab` into `~/.local/bin`, then runs `doctor --fix --all --yes`, which sets
+up everything the labs use: the Pico SDK and its submodules, **picotool** (both for builds
+and for probe-free `picolab flash --uf2`; built from source when your distro packages
+none), the Raspberry Pi OpenOCD fork (Debug Probe), the FreeRTOS kernel and the udev rule.
+
+Prefer to answer each fix yourself? Run it step by step:
+
 ```bash
 ./picolab install              # symlink into ~/.local/bin (once)
 picolab doctor                 # check toolchain + board (green / orange / red)
 picolab doctor --fix           # offer each fix, ask before running
-./picolab install --tools --yes    # one shot: link + provision, no prompts
-picolab doctor --fix --all --yes   # also build OpenOCD (only needed with a Debug Probe)
+picolab doctor --fix --all     # + OpenOCD, FreeRTOS kernel, udev rule (probe or not)
 ```
 
 The **default flashing path is the Debug Probe (SWD)**. With no probe — a student at home,
-just a plain Pico — `--all` (or the normal fix for the missing shell `picotool`) provisions
-the probe-free path: `picolab flash --uf2` over plain USB.
+just a plain Pico — the same install provisions the probe-free path: `picolab flash --uf2`
+over plain USB.
+
+> Arch keeps picotool in the AUR, so `doctor --fix` builds it from source — that works even
+> with CMake 4: the configure passes `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`, the compatibility
+> the mbedTLS bundled with older SDKs still asks for.
 
 ## Daily use
 
