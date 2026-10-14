@@ -1652,10 +1652,12 @@ doctor_hardware() {
 
     # OpenOCD opens the raw USB device; without a udev rule only root may.
     local node; node="$(printf '/dev/bus/usb/%03d/%03d' "$(cat "$dev/busnum")" "$(cat "$dev/devnum")")"
+    local perm_bad=0
     if [ -r "$node" ] && [ -w "$node" ]; then
         mark ok "probe permission" "$node is accessible to $(id -un)"
     else
-        mark FAIL "probe permission" "$node is root-only — install the udev rule for 2e8a (setup §3), then replug"
+        mark FAIL "probe permission" "$node is root-only — OpenOCD cannot open the probe without the 2e8a udev rule (setup §4); '$ME doctor --fix' installs it (no replug needed)"
+        FIXES+=(udev); perm_bad=1
     fi
 
     local tty
@@ -1664,6 +1666,14 @@ doctor_hardware() {
         else mark FAIL "serial bridge" "$tty exists but you can't open it — add yourself to its group ($(stat -c %G "$tty")) and log in again"; fi
     else
         mark warn "serial bridge" "the probe has no serial port — '$ME monitor' won't show UART output (probe firmware?)"
+    fi
+
+    # Permission first: without it OpenOCD only reports "no matching CMSIS-DAP device",
+    # which reads as a cable problem and sends people hunting for the wrong thing — the
+    # FAIL above is the real one, and its fix (the udev rule) is already queued.
+    if [ "$perm_bad" = 1 ]; then
+        mark note "target (SWD)" "skipped — OpenOCD cannot open the probe until the udev rule above is installed"
+        return 0
     fi
 
     # The real test: does the RP2350 answer over SWD? Skipped when a `picolab ocd`
