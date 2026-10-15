@@ -856,8 +856,8 @@ debug_target() {
     # chatter is sent to debug.openocd.log so it doesn't clutter the GDB console.
     local s=(); mapfile -t s < <(ocd_scripts_arg)
     local ocd_cmd="$(openocd_bin) ${s[*]} -f $OCD_IFACE -f $OCD_TARGET \
-        -c 'adapter speed $ADAPTER_SPEED' -c 'gdb_port pipe; log_output $BUILD_DIR/debug.openocd.log'"
-    [ "$CMSIS_DAP_QUIRK" = 1 ] && ocd_cmd+=" -c init -c 'cmsis-dap quirk enable'"   # after gdb_port: that one is config-only
+        -c 'adapter speed $ADAPTER_SPEED' -c 'gdb port pipe; log_output $BUILD_DIR/debug.openocd.log'"
+    [ "$CMSIS_DAP_QUIRK" = 1 ] && ocd_cmd+=" -c init -c 'cmsis-dap quirk enable'"   # after gdb port: that one is config-only
 
     # With a `picolab ocd` server running, connect to it — exactly the lab's
     # two-terminal §5 recipe, and its terminal shows the SWD side live. Without one,
