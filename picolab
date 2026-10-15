@@ -835,11 +835,19 @@ debug_target() {
     local elf gdb
     pick_elf "${1:-}" debug; elf="$ELF"
     gdb="$(gdb_bin)"   # none installed: gdb_bin prints the fix and this assignment stops here
-    local btype; btype="$(sed -n 's/^CMAKE_BUILD_TYPE:STRING=//p' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null)"
+    # Build type: ask the build's cache — but only if there IS one. A named .elf has no
+    # build/ (pick_elf points BUILD_DIR at the cache dir), and a bare `sed` on the missing
+    # file fails the assignment, so set -e exits with no message at all.
+    local btype="" cache="$BUILD_DIR/CMakeCache.txt"
+    if [ -f "$cache" ]; then btype="$(sed -n 's/^CMAKE_BUILD_TYPE:STRING=//p' "$cache" 2>/dev/null || true)"; fi
     case "$btype" in Release|MinSizeRel|"")
-        [ -f "$BUILD_DIR/CMakeCache.txt" ] || btype="unknown"
-        echo "${C_ORANGE}   note: this is a ${btype:-Release (the SDK default)} build — optimised, so variables may show <optimized out>${C_OFF}"
-        echo "${C_ORANGE}         and 'n' can jump around. For a debug-friendly build: $ME debug --debug-build${C_OFF}" ;;
+        if [ -f "$cache" ]; then
+            echo "${C_ORANGE}   note: this is a ${btype:-Release (the SDK default)} build — optimised, so variables may show <optimized out>${C_OFF}"
+            echo "${C_ORANGE}         and 'n' can jump around. For a debug-friendly build: $ME debug --debug-build${C_OFF}"
+        else
+            echo "${C_ORANGE}   note: you named an existing .elf — its build type is unknown; if it is a${C_OFF}"
+            echo "${C_ORANGE}         Release build, variables may show <optimized out> and 'n' can jump around.${C_OFF}"
+        fi ;;
     esac
 
     # GDB launches OpenOCD itself as a "pipe" subprocess: GDB talks to it over the
