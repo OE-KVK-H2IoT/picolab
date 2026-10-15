@@ -888,12 +888,19 @@ debug_target() {
     # stripped one) doesn't, and GDB stops a command file at its first error — so that error
     # would land before `load`'s confirmation echo and look exactly like a failed flash.
     # Ask GDB first (symbols only, no target): if main is missing, load, halt at the entry
-    # point and explain, instead of breaking at a function that isn't there.
-    local stop_echo="\\n>> new build loaded, stopped at main(). $hint\\n" have_main=1
-    if ! "$gdb" -q -batch "$elf" -ex "info address main" >/dev/null 2>&1; then
+    # point and explain, instead of breaking at a function that isn't there.  --no-break
+    # skips the lot on purpose: the same landing, chosen explicitly.
+    local stop_echo have_main=1
+    if [ "$NOBREAK" = 1 ]; then
         have_main=0
-        stop_echo="\\n>> no 'main' symbol in this .elf (hand-written asm, or stripped build) — your image IS loaded; the chip is halted at its entry point.  'info registers' and 'x/8i \$pc' to look around, 'si' to step.\\n"
-        echo "${C_ORANGE}   note: this .elf has no 'main' symbol — GDB cannot break at main(); loading it and halting at the entry point instead${C_OFF}"
+        stop_echo="\\n>> your image IS loaded and the chip is halted at its entry point (--no-break).  Set your breakpoints, then 'c' to run; 'si' steps instructions, 'info registers' shows the CPU state.\\n"
+    else
+        stop_echo="\\n>> new build loaded, stopped at main(). $hint\\n"
+        if ! "$gdb" -q -batch "$elf" -ex "info address main" >/dev/null 2>&1; then
+            have_main=0
+            stop_echo="\\n>> no 'main' symbol in this .elf (hand-written asm, or stripped build) — your image IS loaded; the chip is halted at its entry point.  'info registers' and 'x/8i \$pc' to look around, 'si' to step.\\n"
+            echo "${C_ORANGE}   note: this .elf has no 'main' symbol — GDB cannot break at main(); loading it and halting at the entry point instead${C_OFF}"
+        fi
     fi
     show "$gdb" -q "${ui[@]}" "$elf" -x "$gs"
     # A TUI draws the whole screen: OpenOCD's own stderr (its banner comes before
@@ -2038,6 +2045,7 @@ uninstall_cli() {
 cmd="${1:-}"; shift || true
 NOBUILD=0; VERBOSE=0; ELF=""; DEBUG_UI=""; PROBE_FREE=0; INSTALL_TOOLS=0; YES=0; ALL=0
 FORCE=0    # `picolab ocd --force`: replace an OpenOCD server that is already running
+NOBREAK=0  # `picolab debug --no-break`: load and halt at the entry point, don't break at main
 
 # The manual half of picolab: what each tool step does and what every part of its
 # command line means. Used by --step (before running) and by `picolab explain` (instead
@@ -2191,6 +2199,8 @@ ${C_BOLD}Every day${C_OFF}  (inside a project folder, or name a course lab: pico
   picolab dashboard             (in another terminal) give the dashboard a window of its own
   picolab vscode                click-to-debug in VS Code, attached to your 'picolab ocd' server
   picolab debug --debug-build   rebuild with -Og -g first: every variable visible, steps follow the source
+  picolab debug --no-break      load, then stay halted at the entry point: set your own
+                                breakpoints and 'c' to run (handy for asm / boot code)
 
   ${C_BOLD}Choosing what gets flashed${C_OFF}  (for flash and debug alike)
   picolab flash --no-build      the existing build as it is; says so if your sources are newer
@@ -2271,6 +2281,7 @@ defs=(); pos=(); known="$(known_knobs)"
 for a in "$@"; do
     case "$a" in
         --no-build)   NOBUILD=1 ;;
+        --no-break)   NOBREAK=1 ;;
         --uf2|--picotool) PROBE_FREE=1 ;;
         --tools)      INSTALL_TOOLS=1 ;;
         --yes|-y)     YES=1 ;;
