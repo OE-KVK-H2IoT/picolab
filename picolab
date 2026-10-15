@@ -884,14 +884,31 @@ debug_target() {
             hint="every stop redraws the dashboard: n step over, s step into, c run, q quit."
             echo "   view: gdb-dashboard — $DASH_WHERE" ;;
     esac
+    # `break main` only works if the file HAS a main symbol. A hand-written asm build (or a
+    # stripped one) doesn't, and GDB stops a command file at its first error — so that error
+    # would land before `load`'s confirmation echo and look exactly like a failed flash.
+    # Ask GDB first (symbols only, no target): if main is missing, load, halt at the entry
+    # point and explain, instead of breaking at a function that isn't there.
+    local stop_echo="\\n>> new build loaded, stopped at main(). $hint\\n" have_main=1
+    if ! "$gdb" -q -batch "$elf" -ex "info address main" >/dev/null 2>&1; then
+        have_main=0
+        stop_echo="\\n>> no 'main' symbol in this .elf (hand-written asm, or stripped build) — your image IS loaded; the chip is halted at its entry point.  'info registers' and 'x/8i \$pc' to look around, 'si' to step.\\n"
+        echo "${C_ORANGE}   note: this .elf has no 'main' symbol — GDB cannot break at main(); loading it and halting at the entry point instead${C_OFF}"
+    fi
     show "$gdb" -q "${ui[@]}" "$elf" -x "$gs"
     # A TUI draws the whole screen: OpenOCD's own stderr (its banner comes before
     # log_output takes over) would scribble over it, so in that view it goes to the log.
     [ "$DEBUG_UI" = tui ] && [ "${remote#|}" != "$remote" ] && remote+=" 2>>$BUILD_DIR/debug.openocd.log"
-    gdb_script "$gs" "set pagination off" "target extended-remote $remote" "monitor reset halt" "load" \
-                     "monitor reset halt" "break main" "continue" \
-                     "echo \\n>> new build loaded, stopped at main(). $hint\\n"
-    echo "   (if this stops with an error instead of the 'new build loaded' line, your new"
+    if [ "$have_main" = 1 ]; then
+        gdb_script "$gs" "set pagination off" "target extended-remote $remote" "monitor reset halt" "load" \
+                         "monitor reset halt" "break main" "continue" \
+                         "echo $stop_echo"
+    else
+        gdb_script "$gs" "set pagination off" "target extended-remote $remote" "monitor reset halt" "load" \
+                         "monitor reset halt" \
+                         "echo $stop_echo"
+    fi
+    echo "   (if this stops with an error instead of the final '>>' line, your new"
     echo "    build is NOT on the board — don't debug it; fix the first error and retry.)"
     # -q quiet banner; the script loads the image, resets, and stops at main().
     "$gdb" -q "${ui[@]}" "$elf" -x "$gs"
