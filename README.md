@@ -50,7 +50,8 @@ picolab help                   # all commands;  picolab help env  for settings
 ```
 
 `picolab flash --uf2` selects the target with `--bus/--address` when the Debug Probe is also
-on USB (picotool otherwise refuses with *"requires a single RP-series device"*).
+on USB, and stops before picotool when no target is on USB — the probe answers picotool too
+(runtime reset), so picolab pins the target itself and never flashes the debugger.
 
 ## Settings (environment)
 
