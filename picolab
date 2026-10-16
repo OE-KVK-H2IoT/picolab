@@ -1575,6 +1575,10 @@ doctor() {
     #   - the one BUILDS use: the CMake package the SDK's find_package() finds;
     #   - the one your SHELL runs when you type `picotool` (first on PATH).
     # A stale shell one doesn't break builds, but `picotool load/info` would be the old tool.
+    # With a debug probe attached, picotool is deliberately note-only: SWD is the flashing
+    # path there, it is only needed for the probe-free case — and a stray one is exactly the
+    # tool that (asked wrongly) can flash the debugger itself.
+    local pt_offer=1; [ "$hp" = 1 ] && pt_offer=0
     local want cfg="" c v
     want="$(sdk_picotool_want)"
     DR_PT_BUILD_V=""; DR_PT_CLI=""; DR_PT_CLI_V=""; DR_PT_OLD=()
@@ -1603,9 +1607,11 @@ doctor() {
             FIXES+=(picotool_build)
         elif [ -n "${PICOTOOL_FETCH_FROM_GIT_PATH:-}" ]; then
             mark ok "picotool" "none installed — the SDK builds its own, cached in $PICOTOOL_FETCH_FROM_GIT_PATH"
-        else
+        elif [ "$pt_offer" = 1 ]; then
             mark note "picotool" "none installed for builds — the SDK downloads and builds one inside every lab's build/ (slow first builds; setup §5)"
             FIXES+=(picotool_build)
+        else
+            mark note "picotool" "none installed — every build makes its own (slower first build); a debug probe is connected, so flashing needs none (setup §5)"
         fi
     fi
 
@@ -1615,18 +1621,27 @@ doctor() {
     if [ -n "$DR_PT_CLI" ]; then
         if picotool_has_usb "$DR_PT_CLI"; then
             mark ok "picotool (USB flash)" "$DR_PT_CLI v${DR_PT_CLI_V:-?} — for 'picolab flash --uf2'"
-        else
+        elif [ "$pt_offer" = 1 ]; then
             mark FAIL "picotool (USB flash)" "$DR_PT_CLI v${DR_PT_CLI_V:-?} was compiled WITHOUT USB support (no 'load' command) — run doctor --fix to rebuild it with libusb, or flash by dragging the .uf2 (setup §5)"
             FIXES+=(picotool_cli)
+        else
+            mark note "picotool (USB flash)" "$DR_PT_CLI v${DR_PT_CLI_V:-?} was compiled WITHOUT USB support — harmless while a probe flashes over SWD; rebuild or remove it before probe-free use (setup §5)"
         fi
     else
         local pcli; pcli="$(find_picotool_cli || true)"
-        if [ -n "$pcli" ]; then
+        if [ "$pt_offer" = 0 ]; then
+            if [ -n "$pcli" ]; then
+                mark note "picotool (USB flash)" "$pcli found — not linked; only probe-free flashing needs it (setup §5)"
+            else
+                mark note "picotool (USB flash)" "not installed — only probe-free flashing needs it; the probe flashes over SWD (setup §5)"
+            fi
+        elif [ -n "$pcli" ]; then
             mark note "picotool (USB flash)" "$pcli found but 'picotool' is not on PATH — link it for --uf2 (setup §5)"
+            FIXES+=(picotool_cli)
         else
             mark note "picotool (USB flash)" "not installed — 'picolab flash --uf2' (for a board with no debug probe) needs it (setup §5)"
+            FIXES+=(picotool_cli)
         fi
-        FIXES+=(picotool_cli)
     fi
 
     local frk=""
@@ -2211,7 +2226,8 @@ ${C_BOLD}First time${C_OFF}
   ./picolab install           put picolab on your PATH (once, from tools/picolab/)
   ./picolab install --tools --all --yes
                               one shot, no prompts: link picolab + provision the whole
-                              toolchain (SDK, picotool, OpenOCD, FreeRTOS kernel, udev rule)
+                              toolchain (SDK, OpenOCD, FreeRTOS kernel, udev rule —
+                              picotool too, but only when no debug probe is attached)
   ./picolab install --tools   the same, but check first and ask before every fix
   picolab doctor              check toolchain + board: ${C_OK}green${C_OFF} ok, ${C_ORANGE}orange${C_OFF} board not ready, ${C_ERR}red${C_OFF} fix this
   picolab init my-project     make a new project folder with an empty main(), explained step by
@@ -2260,8 +2276,9 @@ ${C_BOLD}More${C_OFF}
   picolab upgrade [ver] opt in to a newer Pico SDK than the course pin (default: latest);
                         --tools also refreshes picotool/OpenOCD. The pin stays the default.
   picolab doctor --fix --yes    run every fix without asking (fresh machine / CI)
-  picolab doctor --fix --all    provision everything, probe or not: picotool (probe-free
-                                flashing), OpenOCD (Debug Probe) AND the FreeRTOS kernel
+  picolab doctor --fix --all    provision everything, probe or not: OpenOCD (Debug Probe)
+                                and the FreeRTOS kernel; picotool when no probe is attached
+                                (probe-free flashing is what needs it — setup §5)
   picolab install --tools --all --yes   one shot, no prompts: link picolab + whole toolchain
   picolab help env      settings: PICO_SDK_PATH, ADAPTER_SPEED, SERIAL, ...
 

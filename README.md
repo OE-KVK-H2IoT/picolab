@@ -16,9 +16,10 @@ the whole toolchain:
 ```
 
 It symlinks `picolab` into `~/.local/bin`, then runs `doctor --fix --all --yes`, which sets
-up everything the labs use: the Pico SDK and its submodules, **picotool** (both for builds
-and for probe-free `picolab flash --uf2`; built from source when your distro packages
-none), the Raspberry Pi OpenOCD fork (Debug Probe), the FreeRTOS kernel and the udev rule.
+up everything the labs use: the Pico SDK and its submodules, the Raspberry Pi OpenOCD fork
+(Debug Probe), the FreeRTOS kernel and the udev rule. **picotool is only installed when no
+debug probe is attached** — it is what probe-free `picolab flash --uf2` drives, while on a
+probe bench SWD flashes and every build fetches its own copy (setup §5).
 
 Prefer to answer each fix yourself? Run it step by step:
 
