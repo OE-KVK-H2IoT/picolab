@@ -18,7 +18,7 @@ the whole toolchain:
 It symlinks `picolab` into `~/.local/bin`, then runs `doctor --fix --all --yes`, which sets
 up everything the labs use: the Pico SDK and its submodules, the Raspberry Pi OpenOCD fork
 (Debug Probe), the FreeRTOS kernel and the udev rule. **picotool is only installed when no
-debug probe is attached** — it is what probe-free `picolab flash --uf2` drives, while on a
+debug probe is attached** — it is what probe-free `picolab flash --direct` drives, while on a
 probe bench SWD flashes and every build fetches its own copy (setup §5).
 
 Prefer to answer each fix yourself? Run it step by step:
@@ -31,7 +31,7 @@ picolab doctor --fix --all     # + OpenOCD, FreeRTOS kernel, udev rule (probe or
 ```
 
 The **default flashing path is the Debug Probe (SWD)**. With no probe — a student at home,
-just a plain Pico — the same install provisions the probe-free path: `picolab flash --uf2`
+just a plain Pico — the same install provisions the probe-free path: `picolab flash --direct`
 over plain USB.
 
 > Arch keeps picotool in the AUR, so `doctor --fix` builds it from source — that works even
@@ -44,13 +44,13 @@ over plain USB.
 picolab init my-blink          # create a project, explained step by step
 picolab build                  # cmake configure once, then compile + link -> .elf/.uf2
 picolab flash                  # SWD via OpenOCD (Debug Probe / PicoGremlin)
-picolab flash --uf2            # probe-free: picotool over plain USB
+picolab flash --direct         # no probe: upload straight over USB with picotool (--uf2: alias)
 picolab monitor usb            # read USB-CDC output (or: picolab monitor probe)
 picolab debug                  # GDB: step, break, inspect (needs a probe)
 picolab help                   # all commands;  picolab help env  for settings
 ```
 
-`picolab flash --uf2` selects the target with `--bus/--address` when the Debug Probe is also
+`picolab flash --direct` selects the target with `--bus/--address` when the Debug Probe is also
 on USB, and stops before picotool when no target is on USB — the probe answers picotool too
 (runtime reset), so picolab pins the target itself and never flashes the debugger.
 

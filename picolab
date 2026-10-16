@@ -261,7 +261,7 @@ picotool_bin() {
 
 # Does this picotool support device access? A build without libusb has no
 # load/save/reboot at all ("compiled without USB support") — it can still convert
-# .elf to .uf2, so SDK builds are fine, but `picolab flash --uf2` cannot work.
+# .elf to .uf2, so SDK builds are fine, but `picolab flash --direct` cannot work.
 # Accepts a path or a bare command name (picotool_bin returns the name for display).
 picotool_has_usb() {
     local pt="$1" out
@@ -544,7 +544,7 @@ program_image() {
     local img="$1"
     case "$img" in
         *.uf2) echo "!! OpenOCD can't program a .uf2 over SWD — that's the BOOTSEL format." >&2
-               echo "   Use the probe-free path instead:  $ME flash --uf2 \"$img\"" >&2
+               echo "   Use the probe-free path instead:  $ME flash --direct \"$img\"" >&2
                echo "   (or drag the .uf2 to the RP2350 drive; to flash over SWD, pass the .elf/.hex)." >&2
                exit 2 ;;
     esac
@@ -848,7 +848,7 @@ ocd_server() {
 
 flash_target() {
     pick_elf "${1:-}" flash
-    if [ "$PROBE_FREE" = 1 ]; then        # --uf2 / --picotool: probe-free, picotool over USB
+    if [ "$PROBE_FREE" = 1 ]; then        # --direct (--uf2/--picotool are aliases): straight over USB
         flash_no_probe "$ELF"
     else
         program_image "$ELF"              # default, unchanged: OpenOCD over SWD
@@ -1340,7 +1340,7 @@ fix_picotool_shadow() {
         "${sudo}rm -rf ${paths[*]}"
 }
 
-# Locate a *usable* picotool binary for the shell path that `picolab flash --uf2` uses:
+# Locate a *usable* picotool binary for the shell path that `picolab flash --direct` uses:
 # USB-enabled, so a build without libusb (no 'load' command) is skipped, not returned.
 # Prefers one already on PATH.
 find_picotool_cli() {
@@ -1390,7 +1390,7 @@ fix_picotool_pkg() {
 }
 
 # Make the shell's `picotool` work: link an existing binary into ~/.local/bin, or build one
-# if none is on the machine. This is what `picolab flash --uf2` / `picolab load --uf2` run.
+# if none is on the machine. This is what `picolab flash --direct` / `picolab load --direct` run.
 fix_picotool_cli() {
     local pcli dir link rc
     dir="$HOME/.local/bin"; link="$dir/picotool"   # not in the `local` line: $dir is not yet set there
@@ -1615,12 +1615,12 @@ doctor() {
         fi
     fi
 
-    # The binary the SHELL runs is what `picolab flash --uf2` (probe-free flashing) needs.
+    # The binary the SHELL runs is what `picolab flash --direct` (probe-free flashing) needs.
     # The build check above can be green while this is missing — a build-only install, or the
     # binary not on PATH — so check it separately and offer to link or build one.
     if [ -n "$DR_PT_CLI" ]; then
         if picotool_has_usb "$DR_PT_CLI"; then
-            mark ok "picotool (USB flash)" "$DR_PT_CLI v${DR_PT_CLI_V:-?} — for 'picolab flash --uf2'"
+            mark ok "picotool (USB flash)" "$DR_PT_CLI v${DR_PT_CLI_V:-?} — for 'picolab flash --direct'"
         elif [ "$pt_offer" = 1 ]; then
             mark FAIL "picotool (USB flash)" "$DR_PT_CLI v${DR_PT_CLI_V:-?} was compiled WITHOUT USB support (no 'load' command) — run doctor --fix to rebuild it with libusb, or flash by dragging the .uf2 (setup §5)"
             FIXES+=(picotool_cli)
@@ -1636,10 +1636,10 @@ doctor() {
                 mark note "picotool (USB flash)" "not installed — only probe-free flashing needs it; the probe flashes over SWD (setup §5)"
             fi
         elif [ -n "$pcli" ]; then
-            mark note "picotool (USB flash)" "$pcli found but 'picotool' is not on PATH — link it for --uf2 (setup §5)"
+            mark note "picotool (USB flash)" "$pcli found but 'picotool' is not on PATH — link it for --direct (setup §5)"
             FIXES+=(picotool_cli)
         else
-            mark note "picotool (USB flash)" "not installed — 'picolab flash --uf2' (for a board with no debug probe) needs it (setup §5)"
+            mark note "picotool (USB flash)" "not installed — 'picolab flash --direct' (for a board with no debug probe) needs it (setup §5)"
             FIXES+=(picotool_cli)
         fi
     fi
@@ -1713,7 +1713,7 @@ doctor() {
     if [ "$bad" -eq 0 ] && [ "$warn" -eq 0 ]; then
         case "$DR_BOARD" in
             pico-bootsel|pico-usb)
-                echo "${C_OK}Environment looks good${C_OFF}; plain Pico ready for probe-free: $ME flash --uf2 <lab>  ·  $ME monitor usb" ;;
+                echo "${C_OK}Environment looks good${C_OFF}; plain Pico ready for probe-free: $ME flash --direct <lab>  ·  $ME monitor usb" ;;
             *)
                 echo "${C_OK}Environment and board look good${C_OFF} — next: $ME l0_blink   (build → flash → monitor)." ;;
         esac
@@ -1758,13 +1758,13 @@ doctor_hardware() {
         case "$ppid" in
             0003|000f) DR_BOARD=pico-bootsel
                        mark ok "Pico (BOOTSEL)" "$chip in bootloader mode (2e8a:$ppid)"
-                       mark note "debug probe" "not connected — SWD needs it; probe-free works now: '$ME flash --uf2 <lab>'" ;;
+                       mark note "debug probe" "not connected — SWD needs it; probe-free works now: '$ME flash --direct <lab>'" ;;
             0009|000a) DR_BOARD=pico-usb
                        mark ok "Pico (USB)" "$chip running USB stdio ($pprod)"
-                       mark note "debug probe" "not connected — SWD needs it; probe-free works now: '$ME flash --uf2 <lab>', '$ME monitor usb'" ;;
+                       mark note "debug probe" "not connected — SWD needs it; probe-free works now: '$ME flash --direct <lab>', '$ME monitor usb'" ;;
             *)         DR_BOARD=none
                        mark warn "debug probe" "NOT CONNECTED — SWD flash/debug needs the PicoGremlin/Debug Probe"
-                       mark note "Pico" "no RP-series device on USB — connect the Pico's own USB (for --uf2) or the probe (for SWD)" ;;
+                       mark note "Pico" "no RP-series device on USB — connect the Pico's own USB (for --direct) or the probe (for SWD)" ;;
         esac
         # picotool opens the raw USB device; without a udev rule only root may.
         if [ -n "$pdev" ]; then
@@ -1971,7 +1971,7 @@ EOF
     echo "${C_OK}>> '$name' is ready.${C_OFF} Next:"
     echo "     cd $dir"
     echo "     $ME build          # configure + compile (prints the exact cmake commands)"
-    echo "     $ME flash --uf2    # program over plain USB — no debug probe needed"
+    echo "     $ME flash --direct    # upload straight over USB — no debug probe needed"
     echo "     $ME flash          # ...or over SWD with the Debug Probe"
     echo "     $ME debug          # ...and stop in main() under GDB (probe only)"
     echo "   or paste main.c into the simulator to try it with no board at all."
@@ -2232,14 +2232,14 @@ ${C_BOLD}First time${C_OFF}
   picolab doctor              check toolchain + board: ${C_OK}green${C_OFF} ok, ${C_ORANGE}orange${C_OFF} board not ready, ${C_ERR}red${C_OFF} fix this
   picolab init my-project     make a new project folder with an empty main(), explained step by
                               step (--step to pause; --blink adds the EP-0172 blink demo)
-  cd my-project && picolab flash --uf2
+  cd my-project && picolab flash --direct
 
 ${C_BOLD}Every day${C_OFF}  (inside a project folder, or name a course lab: picolab flash l0_blink)
   picolab build      cmake configures build/ once, then ninja compiles + links -> <name>.elf;
                      ends with the file, its time and its flash/RAM size   (-v: every gcc/ld line)
   picolab flash      1/2 build (only what changed), 2/2 OpenOCD writes the .elf into the
                      RP2350's flash over SWD, verifies it, resets — your program starts
-                     (no debug probe? add --uf2: it flashes over plain USB with picotool)
+                     (no debug probe? add --direct: upload straight to the chip over USB)
   picolab debug      the same, then GDB stops at main(): next, step, print x, break f, continue
 
   ${C_BOLD}Debug views${C_OFF}  (plain GDB is the default; these show more without typing more)
@@ -2254,9 +2254,10 @@ ${C_BOLD}Every day${C_OFF}  (inside a project folder, or name a course lab: pico
   ${C_BOLD}Choosing what gets flashed${C_OFF}  (for flash and debug alike)
   picolab flash --no-build      the existing build as it is; says so if your sources are newer
   picolab flash path/to/x.elf   exactly that file — nothing is built (.elf, .hex, .bin, .uf2)
-  picolab flash --uf2           no debug probe? write it over plain USB with picotool instead
-       (or --picotool)          of SWD (it reboots the board into its bootloader itself).
-                                Leave the flag off for the normal OpenOCD/SWD path.
+  picolab flash --direct        no debug probe? upload straight to the chip over plain USB
+                                with picotool instead of SWD (it reboots the board into its
+                                bootloader itself). Leave the flag off for the SWD path.
+                                (--uf2 / --picotool still work as aliases.)
   picolab monitor    show the program's printf output (probe UART bridge by default;
                      use 'picolab monitor usb' for USB-CDC-only firmware)
   picolab <lab>      flash that course lab, then monitor (e.g. picolab l0_blink)
@@ -2332,7 +2333,7 @@ for a in "$@"; do
     case "$a" in
         --no-build)   NOBUILD=1 ;;
         --no-break)   NOBREAK=1 ;;
-        --uf2|--picotool) PROBE_FREE=1 ;;
+        --direct|--uf2|--picotool) PROBE_FREE=1 ;;
         --tools)      INSTALL_TOOLS=1 ;;
         --yes|-y)     YES=1 ;;
         --all)        ALL=1 ;;
