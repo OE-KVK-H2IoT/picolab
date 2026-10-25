@@ -47,12 +47,29 @@ picolab flash                  # SWD via OpenOCD (Debug Probe / PicoGremlin)
 picolab flash --direct         # no probe: upload straight over USB with picotool (--uf2: alias)
 picolab monitor usb            # read USB-CDC output (or: picolab monitor probe)
 picolab debug                  # GDB: step, break, inspect (needs a probe)
+picolab la gui                 # PicoGremlin logic analyzer: Qt oscilloscope (or: la info/cap/stream)
 picolab help                   # all commands;  picolab help env  for settings
 ```
 
 `picolab flash --direct` selects the target with `--bus/--address` when the Debug Probe is also
 on USB, and stops before picotool when no target is on USB — the probe answers picotool too
 (runtime reset), so picolab pins the target itself and never flashes the debugger.
+
+## Logic analyzer
+
+The PicoGremlin's second function (the probe's `if03` CDC port). The tools live in their own
+project — [picogremlin-la](https://github.com/gsebik/picogremlin-la) (GPL-3.0, its own
+installer); `picolab la` just runs them on the probe it already resolved for flashing:
+
+```bash
+picolab la info                # probe identity + capability lines
+picolab la cap -c 14,15 -t 14  # one-shot capture (GP16/GP17 = ch14/15) -> CSV/VCD; --plot
+picolab la stream -c 0-7       # continuous stream for --seconds (rate, edges)
+picolab la gui                 # Qt oscilloscope GUI
+```
+
+`picolab doctor --fix` installs the CLI + GUI when a PicoGremlin is attached (point
+`PICOGREMLIN_LA_SRC` at a checkout to use its `install.sh` instead of the published one).
 
 ## Settings (environment)
 
@@ -68,6 +85,8 @@ on USB, and stops before picotool when no target is on USB — the probe answers
 | `PICOLAB_REPO` | The course repo picolab serves (else the git root of `$PWD`) |
 | `PICOLAB_SDK_VERSION` | SDK release `doctor --fix` clones when none exists |
 | `PICOLAB_PICOTOOL_VERSION` | picotool release to build when no SDK says which |
+| `PICOLAB_LA` | Path to the `la` CLI (logic analyzer) if not on PATH / in the shared venv |
+| `PICOGREMLIN_LA_SRC` | picogremlin-la checkout whose `install.sh` `doctor --fix` runs |
 
 ## Vendored vs standalone
 

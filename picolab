@@ -246,6 +246,28 @@ gdb_bin() {
     exit 1
 }
 
+# PicoGremlin's logic-analyzer tools (`la`, from the separate picogremlin-la project — GPL,
+# its own installer). Same search order pg's doctor uses: PICOLAB_LA, PATH, shared venv,
+# pipx — so a bench and its firmware tests see the same install.
+la_bin() {
+    local b
+    [ -n "${PICOLAB_LA:-}" ] && [ -x "$PICOLAB_LA" ] && { echo "$PICOLAB_LA"; return 0; }
+    command -v la >/dev/null 2>&1 && { echo la; return 0; }
+    for b in "$HOME/.local/share/picogremlin/venv/bin/la" "$HOME"/.local/share/pipx/venvs/picogremlin-la/bin/la; do
+        [ -x "$b" ] && { echo "$b"; return 0; }
+    done
+    return 1
+}
+# A PicoGremlin specifically (CMSIS-DAP + logic analyzer): the only probe with an LA port.
+probe_has_la() {
+    local d
+    for d in /sys/bus/usb/devices/*; do
+        [ "$(cat "$d/idVendor" 2>/dev/null)" = 2e8a ] || continue
+        grep -qiE 'logicanalyzer' "$d/product" 2>/dev/null && return 0
+    done
+    return 1
+}
+
 # Find picotool. The build already needs it (SDK 2.x runs it to make the .uf2), so it is
 # usually on PATH, or under the Pico setup's ~/.pico-sdk. Used by the probe-free flashing
 # path: plain USB, no SWD probe, no OpenOCD.
@@ -1151,6 +1173,31 @@ monitor() {
     exec "$HERE/serial-term.sh" "$dev" 115200
 }
 
+# ── logic analyzer ──────────────────────────────────────────────────────────────
+# The PicoGremlin's second function (CDC interface if03). The tools are their own project
+# (picogremlin-la, GPL-3.0, own installer); picolab runs them — on the same probe it
+# resolved for flashing/debug — and shows the command like every other step.
+la_cmd() {
+    local b ser d
+    if ! b="$(la_bin)"; then
+        echo "!! the logic-analyzer tools ('la') are not installed." >&2
+        echo "   Install the CLI + Qt GUI:  $ME doctor --fix    (with a PicoGremlin attached)" >&2
+        echo "   ...or directly:  curl -fsSL https://raw.githubusercontent.com/gsebik/picogremlin-la/main/install.sh | bash" >&2
+        exit 1
+    fi
+    # Same board as OpenOCD/monitor: PICOGREMLIN_SERIAL is the RP2350 OTP chip id, which the
+    # la tools use to pick this probe's if03 port on a multi-probe bench.
+    if [ -z "${PICOGREMLIN_SERIAL:-}" ]; then
+        for d in /sys/bus/usb/devices/*; do
+            [ "$(cat "$d/idVendor" 2>/dev/null)" = 2e8a ] || continue
+            grep -qiE 'logicanalyzer' "$d/product" 2>/dev/null || continue
+            ser="$(cat "$d/serial" 2>/dev/null)"; [ -n "$ser" ] && { export PICOGREMLIN_SERIAL="$ser"; break; }
+        done
+    fi
+    show "$b" "$@"
+    exec "$b" "$@"
+}
+
 # ── versions ────────────────────────────────────────────────────────────────────
 # SDK to clone when there is none. setup.md pins 2.2.0 for the lab image; override with
 # PICOLAB_SDK_VERSION to move every student to another release at once.
@@ -1490,6 +1537,20 @@ fix_udev() {
     echo "   applied to already-connected devices too — a replug is not required."
 }
 
+# The logic-analyzer tools (la CLI + Qt GUI) from picogremlin-la's own installer: a sibling
+# checkout if present (dev benches — the same rule pg uses), else the published installer.
+# Kept a separate project on purpose: GPL-3.0, its own consumers and release cycle.
+fix_la() {
+    local sh="${PICOGREMLIN_LA_SRC:-$REPO/../picogremlin-la}/install.sh"
+    if [ -x "$sh" ]; then
+        propose "install the PicoGremlin logic-analyzer tools (la CLI + Qt GUI) from $sh" "bash '$sh'"
+    else
+        propose "install the PicoGremlin logic-analyzer tools (la CLI + Qt GUI) — picogremlin-la's installer" \
+            "curl -fsSL https://raw.githubusercontent.com/gsebik/picogremlin-la/main/install.sh | bash"
+    fi
+    echo "   then:  $ME la info   ·   $ME la gui"
+}
+
 # Build the Raspberry Pi OpenOCD fork — it is the one that carries target/rp2350.cfg —
 # into ~/.pico-sdk/openocd/pi-fork, where openocd_bin()/ocd_scripts_arg() already look.
 # Needs autotools + libusb dev headers; installed first if missing.
@@ -1695,6 +1756,20 @@ doctor() {
             mark note "picotool (USB flash)" "not installed — 'picolab flash --direct' (for a board with no debug probe) needs it (setup §5)"
             FIXES+=(picotool_cli)
         fi
+    fi
+
+    # PicoGremlin's logic analyzer: the `la` CLI (+ Qt GUI) is a separate project and only
+    # useful with that probe, so a missing install is a note — and --fix only offers it
+    # when the hardware is actually here.
+    local la=""; la="$(la_bin || true)"
+    if [ -n "$la" ]; then
+        local lav; lav="$("$la" --version 2>/dev/null | head -1 || true)"
+        mark ok "logic analyzer" "${lav:-la}  ($la)"
+    elif probe_has_la; then
+        mark note "logic analyzer" "PicoGremlin LA tools not installed — '$ME doctor --fix' installs the la CLI + Qt GUI"
+        FIXES+=(la)
+    else
+        mark note "logic analyzer" "la tools not installed — only needed with a PicoGremlin (its logic analyzer)"
     fi
 
     local frk=""
@@ -2295,6 +2370,12 @@ ${C_BOLD}Every day${C_OFF}  (inside a project folder, or name a course lab: pico
                      (no debug probe? add --direct: upload straight to the chip over USB)
   picolab debug      the same, then GDB stops at main(): next, step, print x, break f, continue
 
+  ${C_BOLD}Logic analyzer${C_OFF}  (the PicoGremlin's second job — 'picolab la <cmd>' runs picogremlin-la)
+  picolab la info               probe identity + capability lines
+  picolab la cap -c 14,15 -t 14 one-shot capture (GP16/GP17 = channels 14/15) -> CSV/VCD; --plot for a graph
+  picolab la stream -c 0-7      continuous stream for --seconds (rate, edges, CSV/VCD)
+  picolab la gui                Qt oscilloscope GUI (trigger, measurements, export)
+
   ${C_BOLD}Debug views${C_OFF}  (plain GDB is the default; these show more without typing more)
   picolab debug --tui           GDB's own split screen: your source follows each step
   picolab debug --dashboard     source, variables, stack, registers redrawn at every stop
@@ -2368,6 +2449,10 @@ ${C_BOLD}picolab settings${C_OFF} — environment variables (make one permanent:
   PICOLAB_NO_ENV        1 = ignore that env file for a one-off run.
   PICOLAB_SDK_VERSION   SDK release doctor --fix clones when there is none (default: $SDK_VERSION).
   PICOLAB_PICOTOOL_VERSION  picotool release to build when no SDK says which (default: $PICOTOOL_VERSION).
+  PICOLAB_LA            Path to the 'la' CLI (the logic analyzer), if not on PATH or in
+                        ~/.local/share/picogremlin/venv.
+  PICOGREMLIN_LA_SRC    picogremlin-la checkout whose install.sh doctor --fix should run
+                        (default: a sibling checkout, else the published installer).
   NO_COLOR=1            Plain output, no colours.
 
 Build-time #defines: trailing KEY=VAL args become -DKEY=VAL, e.g.
@@ -2417,6 +2502,7 @@ case "$cmd" in
     load)         load_image "${pos[0]:-}" ;;
     debug)        debug_target "${pos[0]:-}" ;;
     monitor)      monitor "${pos[0]:-}" ;;
+    la)           la_cmd "${pos[@]}" ;;
     ocd|server)   ocd_server ;;
     init|new)     init_project "${pos[@]}" ;;
     install)      install_cli "${pos[0]:-}" ;;
