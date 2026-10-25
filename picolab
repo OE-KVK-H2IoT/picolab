@@ -1804,8 +1804,9 @@ doctor() {
 
     doctor_hardware
 
-    # --all: provision everything, probe or not — OpenOCD (normally a note without a probe)
-    # and the FreeRTOS kernel (normally a note until the RTOS labs).
+    # --all: provision everything, probe or not — OpenOCD and the logic-analyzer tools
+    # (normally notes without a probe) and the FreeRTOS kernel (normally a note until the
+    # RTOS labs).
     if [ "$ALL" = 1 ]; then
         if [ "${DR_OCD_OK:-0}" != 1 ]; then
             case " ${FIXES[*]-} " in *" openocd "*) ;; *) FIXES+=(openocd) ;; esac
@@ -1820,6 +1821,12 @@ doctor() {
         # 'root-only USB node' round-trip on a fresh machine.
         if [ ! -f /etc/udev/rules.d/99-pico.rules ]; then
             case " ${FIXES[*]-} " in *" udev "*) ;; *) FIXES+=(udev) ;; esac
+        fi
+        # The PicoGremlin's logic-analyzer tools are normally only *offered* when that probe
+        # is attached; --all provisions them anyway, so a lab image is complete even when it
+        # was built with nothing plugged in.
+        if ! la_bin >/dev/null 2>&1; then
+            case " ${FIXES[*]-} " in *" la "*) ;; *) FIXES+=(la) ;; esac
         fi
     fi
 
@@ -2354,8 +2361,8 @@ ${C_BOLD}First time${C_OFF}
   ./picolab install           put picolab on your PATH (once, from tools/picolab/)
   ./picolab install --tools --all --yes
                               one shot, no prompts: link picolab + provision the whole
-                              toolchain (SDK, OpenOCD, FreeRTOS kernel, udev rule —
-                              picotool too, but only when no debug probe is attached)
+                              toolchain (SDK, OpenOCD, FreeRTOS kernel, udev rule,
+                              PicoGremlin LA tools — picotool only when no probe is attached)
   ./picolab install --tools   the same, but check first and ask before every fix
   picolab doctor              check toolchain + board: ${C_OK}green${C_OFF} ok, ${C_ORANGE}orange${C_OFF} board not ready, ${C_ERR}red${C_OFF} fix this
   picolab init my-project     make a new project folder with an empty main(), explained step by
@@ -2411,9 +2418,9 @@ ${C_BOLD}More${C_OFF}
   picolab upgrade [ver] opt in to a newer Pico SDK than the course pin (default: latest);
                         --tools also refreshes picotool/OpenOCD. The pin stays the default.
   picolab doctor --fix --yes    run every fix without asking (fresh machine / CI)
-  picolab doctor --fix --all    provision everything, probe or not: OpenOCD (Debug Probe)
-                                and the FreeRTOS kernel; picotool when no probe is attached
-                                (probe-free flashing is what needs it — setup §5)
+  picolab doctor --fix --all    provision everything, probe or not: OpenOCD (Debug Probe),
+                                the FreeRTOS kernel and the PicoGremlin LA tools; picotool
+                                when no probe is attached (probe-free flashing — setup §5)
   picolab install --tools --all --yes   one shot, no prompts: link picolab + whole toolchain
   picolab help env      settings: PICO_SDK_PATH, ADAPTER_SPEED, SERIAL, ...
 

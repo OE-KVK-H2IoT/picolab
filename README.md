@@ -17,9 +17,10 @@ the whole toolchain:
 
 It symlinks `picolab` into `~/.local/bin`, then runs `doctor --fix --all --yes`, which sets
 up everything the labs use: the Pico SDK and its submodules, the Raspberry Pi OpenOCD fork
-(Debug Probe), the FreeRTOS kernel and the udev rule. **picotool is only installed when no
-debug probe is attached** — it is what probe-free `picolab flash --direct` drives, while on a
-probe bench SWD flashes and every build fetches its own copy (setup §5).
+(Debug Probe), the FreeRTOS kernel, the udev rule and the PicoGremlin logic-analyzer tools.
+**picotool is only installed when no debug probe is attached** — it is what probe-free
+`picolab flash --direct` drives, while on a probe bench SWD flashes and every build fetches
+its own copy (setup §5).
 
 Prefer to answer each fix yourself? Run it step by step:
 
@@ -68,8 +69,9 @@ picolab la stream -c 0-7       # continuous stream for --seconds (rate, edges)
 picolab la gui                 # Qt oscilloscope GUI
 ```
 
-`picolab doctor --fix` installs the CLI + GUI when a PicoGremlin is attached (point
-`PICOGREMLIN_LA_SRC` at a checkout to use its `install.sh` instead of the published one).
+`picolab doctor --fix` installs the CLI + GUI when a PicoGremlin is attached, and
+`install --tools --all --yes` provisions them probe or not (point `PICOGREMLIN_LA_SRC` at a
+checkout to use its `install.sh` instead of the published one).
 
 ## Settings (environment)
 
