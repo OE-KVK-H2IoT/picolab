@@ -1426,14 +1426,67 @@ fix_picotool_cli() {
     esac
 }
 
-# Raw USB access (picotool flashing, OpenOCD) and /dev/ttyACM* are root-only until a udev
-# rule tags Raspberry Pi devices for the active session (uaccess). Same rule as setup §4.
+# The 2e8a rule. uaccess alone is granted at the udev "add" event to the ACTIVE local
+# session — a probe already plugged in at boot gets that event before login, so the ACL is
+# never applied and the device stays root-only until a manual trigger (why a machine needed
+# the fix again after every reboot). A group fallback (plugdev for USB, dialout/uucp for
+# tty) survives reboots; it is emitted only when the system has that group, so Arch stays
+# uaccess-only for USB (no plugdev there).
+udev_rule_text() {
+    local usb="" tty="" g
+    getent group plugdev >/dev/null 2>&1 && usb="plugdev"
+    for g in dialout uucp; do getent group "$g" >/dev/null 2>&1 && { tty="$g"; break; }; done
+    echo '# Raspberry Pi (Pico, RP2350 bootrom, PicoGremlin/Debug Probe) — grant the active local user access.'
+    echo '# uaccess covers a local desktop session; the group fallback keeps working after a reboot'
+    echo '# (the add event at boot fires before login, so the ACL is not applied then).'
+    if [ -n "$usb" ]; then
+        echo "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\", MODE=\"0660\", GROUP=\"$usb\""
+    else
+        echo "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\""
+    fi
+    if [ -n "$tty" ]; then
+        echo "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\", MODE=\"0660\", GROUP=\"$tty\""
+    else
+        echo "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\""
+    fi
+}
+# The groups the generated rule assigns (for the "log out and back in" hint).
+udev_rule_groups() {
+    local g
+    getent group plugdev >/dev/null 2>&1 && echo plugdev
+    for g in dialout uucp; do getent group "$g" >/dev/null 2>&1 && { echo "$g"; break; }; done
+}
+# Why a 2e8a device node is not accessible, in words a student can act on.
+perm_reason() {
+    local rule=/etc/udev/rules.d/99-pico.rules g miss=""
+    if [ ! -f "$rule" ]; then echo "no 2e8a udev rule yet (setup §4)"; return; fi
+    for g in $(udev_rule_groups); do
+        case " $(id -nG) " in *" $g "*) ;; *) miss+="$g " ;; esac
+    done
+    if [ -n "$miss" ]; then
+        echo "the rule is installed, but you are not in ${miss% } yet — log out and back in"
+    else
+        echo "the rule is installed; this session has no access — uaccess covers a local login, so log in locally (or replug the probe)"
+    fi
+}
+
 fix_udev() {
+    local src="$PL_CACHE/99-pico.rules" rule=/etc/udev/rules.d/99-pico.rules miss="" g
+    mkdir -p "$PL_CACHE"
+    udev_rule_text > "$src"
     propose "install the udev rule for Raspberry Pi USB devices (no sudo for flash, OpenOCD, serial)" \
-        "printf '%s\n' '# Raspberry Pi (Pico, RP2350 bootrom, Debug Probe) — grant the active local user access' 'SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\"' 'SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\"' | sudo tee /etc/udev/rules.d/99-pico.rules >/dev/null" \
+        "sudo install -m644 '$src' '$rule'" \
         "sudo udevadm control --reload-rules" \
         "sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=2e8a" \
         "sudo udevadm trigger --action=add --subsystem-match=tty"
+    for g in $(udev_rule_groups); do
+        case " $(id -nG) " in *" $g "*) ;; *) miss+="$g " ;; esac
+    done
+    if [ -n "$miss" ]; then
+        propose "add $(id -un) to the device group(s) ${miss% } — the group fallback needs it after a reboot" \
+            "sudo usermod -aG $(printf '%s' "${miss% }" | tr ' ' ',') $(id -un)"
+        echo "   log out and back in for the group to apply (uaccess covers this session)."
+    fi
     echo "   applied to already-connected devices too — a replug is not required."
 }
 
@@ -1772,7 +1825,7 @@ doctor_hardware() {
             if [ -r "$node" ] && [ -w "$node" ]; then
                 mark ok "Pico permission" "$node is accessible to $(id -un) — picotool can flash"
             else
-                mark FAIL "Pico permission" "$node is root-only — picotool cannot flash without the 2e8a udev rule (setup §4); install it, then replug"
+                mark FAIL "Pico permission" "$node is root-only — $(perm_reason); '$ME doctor --fix' updates the rule and groups"
                 FIXES+=(udev)
             fi
         fi
@@ -1791,7 +1844,7 @@ doctor_hardware() {
     if [ -r "$node" ] && [ -w "$node" ]; then
         mark ok "probe permission" "$node is accessible to $(id -un)"
     else
-        mark FAIL "probe permission" "$node is root-only — OpenOCD cannot open the probe without the 2e8a udev rule (setup §4); '$ME doctor --fix' installs it (no replug needed)"
+        mark FAIL "probe permission" "$node is root-only — $(perm_reason); '$ME doctor --fix' updates the rule and groups"
         FIXES+=(udev); perm_bad=1
     fi
 
