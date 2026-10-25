@@ -982,6 +982,14 @@ debug_target() {
 # student sees the machine state without typing commands, and each panel is still just
 # GDB underneath. `picolab dashboard` lends it a terminal of its own.
 PL_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/picolab"
+# Compilers put their scratch files in TMPDIR (default /tmp). On machines where /tmp is a
+# small tmpfs — or has a per-user quota, as on the course benches — a full one fails the
+# first gcc step with EDQUOT mid-build. Keep that scratch on real disk instead, unless the
+# user has chosen a TMPDIR themselves.
+if [ -z "${TMPDIR:-}" ]; then
+    mkdir -p "$PL_CACHE/tmp" 2>/dev/null || true
+    [ -d "$PL_CACHE/tmp" ] && export TMPDIR="$PL_CACHE/tmp"
+fi
 DASH_FILE="$PL_CACHE/gdb-dashboard.gdb"
 DASH_URL="https://raw.githubusercontent.com/cyrus-and/gdb-dashboard/master/.gdbinit"
 DASH_TTY_FILE="$PL_CACHE/dashboard.tty"
@@ -1793,7 +1801,12 @@ doctor() {
     # configure + build it end to end — the same path a student's first project takes,
     # independent of any course's lab folders.
     if [ -n "${PICO_SDK_PATH:-}" ] && [ -f "$PICO_SDK_PATH/pico_sdk_init.cmake" ]; then
-        local td; td="$(mktemp -d)"
+        # Build on real disk, not /tmp: /tmp is a small RAM-backed tmpfs on many machines
+        # (this course's own benches included), and a full one fails the build mid-way with
+        # EDQUOT — the log redirect itself cannot even be written, so doctor shows an empty
+        # log and a FAIL that names nothing.
+        mkdir -p "$PL_CACHE"
+        local td; td="$(mktemp -d "$PL_CACHE/doctor.XXXXXX")"
         if (init_project "$td/doctor_blink" </dev/null) >"$td/log" 2>&1 \
            && cmake -S "$td/doctor_blink" -B "$td/doctor_blink/build" "${GEN_ARGS[@]}" >>"$td/log" 2>&1 \
            && cmake --build "$td/doctor_blink/build" >>"$td/log" 2>&1 && [ -f "$td/doctor_blink/build/doctor_blink.uf2" ]; then
