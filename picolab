@@ -1481,19 +1481,16 @@ fix_picotool_cli() {
     esac
 }
 
-# The 2e8a rule. uaccess alone is granted at the udev "add" event to the ACTIVE local
-# session — a probe already plugged in at boot gets that event before login, so the ACL is
-# never applied and the device stays root-only until a manual trigger (why a machine needed
-# the fix again after every reboot). A group fallback (plugdev for USB, dialout/uucp for
-# tty) survives reboots; it is emitted only when the system has that group, so Arch stays
-# uaccess-only for USB (no plugdev there).
+# The 2e8a rule. Install before 73-seat-late so uaccess is applied on USB add events.
+# Group fallback (plugdev for USB, dialout/uucp for tty) survives logins and reboots;
+# it is emitted only when the system has that group, so Arch stays uaccess-only for USB.
 udev_rule_text() {
     local usb="" tty="" g
     getent group plugdev >/dev/null 2>&1 && usb="plugdev"
     for g in dialout uucp; do getent group "$g" >/dev/null 2>&1 && { tty="$g"; break; }; done
     echo '# Raspberry Pi (Pico, RP2350 bootrom, PicoGremlin/Debug Probe) — grant the active local user access.'
     echo '# uaccess covers a local desktop session; the group fallback keeps working after a reboot'
-    echo '# (the add event at boot fires before login, so the ACL is not applied then).'
+    echo '# Install as 60-pico.rules so systemd-logind can apply the uaccess ACL.'
     if [ -n "$usb" ]; then
         echo "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\", MODE=\"0660\", GROUP=\"$usb\""
     else
@@ -1505,44 +1502,81 @@ udev_rule_text() {
         echo "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"2e8a\", TAG+=\"uaccess\""
     fi
 }
-# The groups the generated rule assigns (for the "log out and back in" hint).
+# The groups the generated rule assigns.
 udev_rule_groups() {
     local g
     getent group plugdev >/dev/null 2>&1 && echo plugdev
     for g in dialout uucp; do getent group "$g" >/dev/null 2>&1 && { echo "$g"; break; }; done
 }
+# Test NSS group membership (not this process's supplementary-group snapshot, which
+# remains stale until a new login after usermod).
+user_in_group() {
+    local user="$1" group="$2" members
+    members="$(getent group "$group" | cut -d: -f4)"
+    case ",$members," in *,"$user",*) return 0 ;; *) return 1 ;; esac
+}
+# Select an elevation path. On a local graphical session, pkexec offers an admin
+# approval dialog; on SSH/headless sessions, sudo is the normal admin route.
+admin_prefix() {
+    if { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } && command -v pkexec >/dev/null 2>&1; then
+        echo pkexec
+    elif command -v sudo >/dev/null 2>&1; then
+        echo sudo
+    else
+        return 1
+    fi
+}
 # Why a 2e8a device node is not accessible, in words a student can act on.
 perm_reason() {
-    local rule=/etc/udev/rules.d/99-pico.rules g miss=""
-    if [ ! -f "$rule" ]; then echo "no 2e8a udev rule yet (setup §4)"; return; fi
+    local rule=/etc/udev/rules.d/60-pico.rules g miss="" user; user="$(id -un)"
+    if [ ! -f "$rule" ] && [ ! -f /etc/udev/rules.d/99-pico.rules ]; then echo "no 2e8a udev rule yet (setup §4)"; return; fi
     for g in $(udev_rule_groups); do
-        case " $(id -nG) " in *" $g "*) ;; *) miss+="$g " ;; esac
+        user_in_group "$user" "$g" || miss+="$g "
     done
     if [ -n "$miss" ]; then
-        echo "the rule is installed, but you are not in ${miss% } yet — log out and back in"
+        if [ "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; then
+            echo "the rule is installed, but remote user $user is not in ${miss% }; an admin must approve: sudo usermod -aG ${miss% } $user"
+        else
+            echo "the rule is installed, but you are not in ${miss% } yet — doctor --fix can request admin approval"
+        fi
     else
         echo "the rule is installed; this session has no access — uaccess covers a local login, so log in locally (or replug the probe)"
     fi
 }
 
 fix_udev() {
-    local src="$PL_CACHE/99-pico.rules" rule=/etc/udev/rules.d/99-pico.rules miss="" g
+    local src="$PL_CACHE/60-pico.rules" rule=/etc/udev/rules.d/60-pico.rules miss="" g user prefix
+    user="$(id -un)"
     mkdir -p "$PL_CACHE"
     udev_rule_text > "$src"
-    propose "install the udev rule for Raspberry Pi USB devices (no sudo for flash, OpenOCD, serial)" \
-        "sudo install -m644 '$src' '$rule'" \
-        "sudo udevadm control --reload-rules" \
-        "sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=2e8a" \
-        "sudo udevadm trigger --action=add --subsystem-match=tty"
+    if ! prefix="$(admin_prefix)"; then
+        echo "!! no admin-approval tool found. Ask an administrator to run:"
+        echo "   sudo install -m644 '$src' '$rule'"
+        echo "   sudo usermod -aG plugdev '$user'"
+        echo "   sudo udevadm control --reload-rules && sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=2e8a"
+        return 1
+    fi
+    propose "install the udev rule for Raspberry Pi USB devices (admin approval may be requested)" \
+        "$prefix install -m644 '$src' '$rule'" \
+        "$prefix udevadm control --reload-rules" \
+        "$prefix udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=2e8a" \
+        "$prefix udevadm trigger --action=add --subsystem-match=tty" || return 1
     for g in $(udev_rule_groups); do
-        case " $(id -nG) " in *" $g "*) ;; *) miss+="$g " ;; esac
+        user_in_group "$user" "$g" || miss+="$g "
     done
     if [ -n "$miss" ]; then
-        propose "add $(id -un) to the device group(s) ${miss% } — the group fallback needs it after a reboot" \
-            "sudo usermod -aG $(printf '%s' "${miss% }" | tr ' ' ',') $(id -un)"
-        echo "   log out and back in for the group to apply (uaccess covers this session)."
+        propose "add $user to device group(s) ${miss% } — permanent access after reconnect and reboot" \
+            "$prefix usermod -aG $(printf '%s' "${miss% }" | tr ' ' ',') '$user'"
+        miss=""
+        for g in $(udev_rule_groups); do user_in_group "$user" "$g" || miss+="$g "; done
+        if [ -n "$miss" ]; then
+            echo "!! group membership was not confirmed. Ask an administrator to run:"
+            echo "   sudo usermod -aG $(printf '%s' "${miss% }" | tr ' ' ',') '$user'"
+        else
+            echo "   group membership is recorded; log out and back in (or reconnect SSH) to activate it."
+        fi
     fi
-    echo "   applied to already-connected devices too — a replug is not required."
+    if [ -e "$rule" ]; then echo "   rule installed at $rule and applied to connected devices."; fi
 }
 
 # The logic-analyzer tools (la CLI + Qt GUI) from picogremlin-la's own installer: a sibling
@@ -1805,10 +1839,14 @@ doctor() {
         # (this course's own benches included), and a full one fails the build mid-way with
         # EDQUOT — the log redirect itself cannot even be written, so doctor shows an empty
         # log and a FAIL that names nothing.
-        mkdir -p "$PL_CACHE"
+        mkdir -p "$PL_CACHE" "$PL_CACHE/picotool-src"
+        # The SDK otherwise fetches picotool into each temporary project's _deps tree.
+        # Keep its source checkout in a stable, user-writable cache location instead;
+        # this also avoids fragile per-build FetchContent setup from arbitrary CWDs.
         local td; td="$(mktemp -d "$PL_CACHE/doctor.XXXXXX")"
         if (init_project "$td/doctor_blink" </dev/null) >"$td/log" 2>&1 \
-           && cmake -S "$td/doctor_blink" -B "$td/doctor_blink/build" "${GEN_ARGS[@]}" >>"$td/log" 2>&1 \
+           && cmake -S "$td/doctor_blink" -B "$td/doctor_blink/build" "${GEN_ARGS[@]}" \
+                "-DPICOTOOL_FETCH_FROM_GIT_PATH=$PL_CACHE/picotool-src" >>"$td/log" 2>&1 \
            && cmake --build "$td/doctor_blink/build" >>"$td/log" 2>&1 && [ -f "$td/doctor_blink/build/doctor_blink.uf2" ]; then
             mark ok "compile pipeline" "a fresh 'picolab init' project built to .uf2 (configure→compile→link OK)"
             rm -rf "$td"
@@ -1832,7 +1870,7 @@ doctor() {
         fi
         # The udev rule (setup §4): harmless to install ahead of the board, and it saves the
         # 'root-only USB node' round-trip on a fresh machine.
-        if [ ! -f /etc/udev/rules.d/99-pico.rules ]; then
+        if [ ! -f /etc/udev/rules.d/60-pico.rules ]; then
             case " ${FIXES[*]-} " in *" udev "*) ;; *) FIXES+=(udev) ;; esac
         fi
         # The PicoGremlin's logic-analyzer tools are normally only *offered* when that probe

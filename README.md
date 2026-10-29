@@ -39,6 +39,12 @@ over plain USB.
 > with CMake 4: the configure passes `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`, the compatibility
 > the mbedTLS bundled with older SDKs still asks for.
 
+On Ubuntu, `doctor --fix` installs the Pico udev rule before the system's seat-access rules,
+then adds the current user to `plugdev` for persistent access (including SSH and after reboot).
+In a graphical session it can request administrator approval with `pkexec`; in SSH, an
+administrator must approve the `sudo usermod -aG plugdev <user>` step. A normal user cannot
+grant themselves USB access without administrator approval.
+
 ## Daily use
 
 ```bash
